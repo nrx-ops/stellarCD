@@ -18,7 +18,10 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -37,6 +40,7 @@ import (
 
 	corev1alpha1 "github.com/nrx-ops/stellarCD/api/v1alpha1"
 	"github.com/nrx-ops/stellarCD/internal/controller"
+	"github.com/nrx-ops/stellarCD/internal/version"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -61,6 +65,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var showVersion bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -79,11 +84,17 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit.")
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("%+v\n", version.Get())
+		os.Exit(0)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -127,6 +138,16 @@ func main() {
 		BindAddress:   metricsAddr,
 		SecureServing: secureMetrics,
 		TLSOpts:       tlsOpts,
+		// /version is served alongside /metrics so it shares the same bind
+		// address, TLS and (when --metrics-secure) authn/authz filter.
+		ExtraHandlers: map[string]http.Handler{
+			"/version": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(version.Get()); err != nil {
+					setupLog.Error(err, "Failed to write version response")
+				}
+			}),
+		},
 	}
 
 	if secureMetrics {
