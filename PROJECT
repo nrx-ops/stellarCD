@@ -8,14 +8,4 @@ layout:
 - go.kubebuilder.io/v4
 projectName: stellarcd
 repo: github.com/nrx-ops/stellarCD
-resources:
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: stellarcd.io
-  group: core
-  kind: StellarApp
-  path: github.com/nrx-ops/stellarCD/api/v1alpha1
-  version: v1alpha1
 version: "3"
