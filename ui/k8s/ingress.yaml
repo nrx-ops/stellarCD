@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stellarcd-dashboard
+  namespace: stellarcd-ui
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Optional: enable OIDC auth via oauth2-proxy
+    # nginx.ingress.kubernetes.io/auth-url: "http://oauth2-proxy:4180/oauth2/auth"
+    # nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - stellarcd.example.com
+    secretName: stellarcd-dashboard-tls
+  rules:
+  - host: stellarcd.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: stellarcd-dashboard
+            port:
+              number: 3000

@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stellarcd-ui
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stellarcd-dashboard
+  namespace: stellarcd-ui
+  labels:
+    app: stellarcd-dashboard
+    version: v0.1.0
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: stellarcd-dashboard
+  template:
+    metadata:
+      labels:
+        app: stellarcd-dashboard
+    spec:
+      serviceAccountName: stellarcd-dashboard
+      containers:
+      - name: ui
+        image: stellarcd-ui:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        env:
+        - name: KUBE_API_URL
+          value: "https://kubernetes.default.svc.cluster.local"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stellarcd-dashboard
+  namespace: stellarcd-ui
+  labels:
+    app: stellarcd-dashboard
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3000
+    targetPort: http
+    protocol: TCP
+  selector:
+    app: stellarcd-dashboard
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stellarcd-dashboard
+  namespace: stellarcd-ui
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stellarcd-dashboard
+rules:
+- apiGroups: ["stellar.sh"]
+  resources: ["stellarapps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["stellar.sh"]
+  resources: ["stellarapps/status"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: stellarcd-dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: stellarcd-dashboard
+subjects:
+- kind: ServiceAccount
+  name: stellarcd-dashboard
+  namespace: stellarcd-ui

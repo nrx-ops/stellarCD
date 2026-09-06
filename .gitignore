@@ -28,3 +28,6 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Architecture Decision Records (keep local drafts out of git)
+/adr
