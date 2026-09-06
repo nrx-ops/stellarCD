@@ -16,9 +16,10 @@ export default function AdminMenu() {
     'crds',
     async () => {
       try {
-        const response = await axios.get('/api/v1/admin/crds')
+        const response = await axios.get('http://stellarcd-admin-api:8080/api/v1/admin/crds')
         return response.data
-      } catch {
+      } catch (err) {
+        console.error('Failed to fetch CRDs:', err)
         return []
       }
     },

@@ -146,25 +146,6 @@ func main() {
 					setupLog.Error(err, "Failed to write version response")
 				}
 			}),
-			"/api/v1/admin/crds": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-
-				type CRDInfo struct {
-					Name    string `json:"name"`
-					Version string `json:"version"`
-					Group   string `json:"group"`
-					Kind    string `json:"kind"`
-				}
-
-				crds := []CRDInfo{
-					{Name: "StellarApps", Version: "v1alpha1", Group: "core.stellarcd.io", Kind: "StellarApp"},
-				}
-
-				w.WriteHeader(http.StatusOK)
-				if err := json.NewEncoder(w).Encode(crds); err != nil {
-					setupLog.Error(err, "Failed to write CRDs response")
-				}
-			}),
 		},
 	}
 
@@ -227,6 +208,31 @@ func main() {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
 	}
+
+	// Start admin API server on port 8080
+	go func() {
+		adminMux := http.NewServeMux()
+		adminMux.HandleFunc("/api/v1/admin/crds", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			type CRDInfo struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+				Group   string `json:"group"`
+				Kind    string `json:"kind"`
+			}
+			crds := []CRDInfo{
+				{Name: "StellarApps", Version: "v1alpha1", Group: "core.stellarcd.io", Kind: "StellarApp"},
+			}
+			w.WriteHeader(http.StatusOK)
+			if err := json.NewEncoder(w).Encode(crds); err != nil {
+				setupLog.Error(err, "Failed to write CRDs response")
+			}
+		})
+		setupLog.Info("Starting admin API server on port 8080")
+		if err := http.ListenAndServe(":8080", adminMux); err != nil {
+			setupLog.Error(err, "Failed to start admin API server")
+		}
+	}()
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
