@@ -1,0 +1,124 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: stellarapps.core.stellarcd.io
+spec:
+  group: core.stellarcd.io
+  names:
+    kind: StellarApp
+    listKind: StellarAppList
+    plural: stellarapps
+    shortNames:
+    - sapp
+    - stapps
+    singular: stellarapp
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.gitRepository.url
+      name: Git Repo
+      type: string
+    - jsonPath: .spec.terraformPath
+      name: Terraform Path
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: StellarApp is the Schema for the stellarapps API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: StellarAppSpec defines the desired state of StellarApp
+            properties:
+              autoApply:
+                description: AutoApply enables automatic application of terraform
+                  plans
+                type: boolean
+              executor:
+                description: Executor is the tool to use for infrastructure changes
+                enum:
+                - Terraform
+                - Terragrunt
+                type: string
+              gitRepository:
+                description: GitRepository contains Git repository configuration
+                properties:
+                  ref:
+                    description: 'Ref is the Git branch/tag to track (default: main)'
+                    type: string
+                  secretRef:
+                    description: SecretRef is a reference to a Secret containing authentication
+                      credentials
+                    properties:
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: URL is the Git repository URL
+                    type: string
+                required:
+                - url
+                type: object
+              interval:
+                description: Interval is the reconciliation interval (e.g., "5m")
+                type: string
+              terraformPath:
+                description: TerraformPath is the path to the Terraform/Terragrunt
+                  directory in the Git repo
+                type: string
+            required:
+            - gitRepository
+            - terraformPath
+            type: object
+          status:
+            description: StellarAppStatus defines the observed state of StellarApp
+            properties:
+              lastError:
+                description: LastError contains the last error message
+                type: string
+              lastSyncTime:
+                description: LastSyncTime is the timestamp of the last successful
+                  sync
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration reflects the generation of the spec
+                  that was last processed
+                format: int64
+                type: integer
+              phase:
+                description: Phase indicates the current phase of reconciliation
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
