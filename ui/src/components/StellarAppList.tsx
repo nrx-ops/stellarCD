@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from 'react-query'
 import { listStellarApps, getNamespaces, StellarApp } from '../services/api'
 import StellarAppDetail from './StellarAppDetail'
@@ -7,7 +7,7 @@ export default function StellarAppList() {
   const [selectedApp, setSelectedApp] = useState<StellarApp | null>(null)
   const [namespace, setNamespace] = useState('default')
 
-  const { data: namespaces, isLoading: namespacesLoading } = useQuery(
+  const { data: namespaces } = useQuery(
     'namespaces',
     getNamespaces
   )
@@ -70,7 +70,7 @@ export default function StellarAppList() {
         </div>
       )}
 
-      {error && (
+      {!!error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
           <p className="text-red-800">Failed to load StellarApps. Make sure the API proxy is configured.</p>
         </div>
