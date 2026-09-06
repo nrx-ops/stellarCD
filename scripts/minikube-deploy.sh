@@ -21,9 +21,10 @@ kubectl config use-context "$MINIKUBE_PROFILE" || true
 
 # Ensure kustomize exists
 if [ ! -f "$KUSTOMIZE" ]; then
-  echo "Error: kustomize not found at $KUSTOMIZE"
-  echo "Run 'make kustomize' first"
-  exit 1
+  echo "Installing kustomize..."
+  cd "$SCRIPT_DIR"
+  make kustomize > /dev/null 2>&1
+  cd - > /dev/null
 fi
 
 # Create namespace if it doesn't exist
