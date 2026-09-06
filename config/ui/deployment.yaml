@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: system
+  labels:
+    app: stellarcd-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stellarcd-ui
+  template:
+    metadata:
+      labels:
+        app: stellarcd-ui
+    spec:
+      containers:
+      - name: ui
+        image: ui:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 3000
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: system
+  labels:
+    app: stellarcd-ui
+spec:
+  type: NodePort
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 30300
+  selector:
+    app: stellarcd-ui
