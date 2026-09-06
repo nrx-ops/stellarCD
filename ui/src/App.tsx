@@ -1,4 +1,5 @@
 import StellarAppList from './components/StellarAppList'
+import AdminMenu from './components/AdminMenu'
 
 function App() {
   return (
@@ -17,6 +18,9 @@ function App() {
 
       <main>
         <StellarAppList />
+        <div className="max-w-6xl mx-auto px-6 py-4">
+          <AdminMenu />
+        </div>
       </main>
     </div>
   )
