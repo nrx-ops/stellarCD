@@ -186,6 +186,32 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
+##@ Minikube
+
+CONTROLLER_IMG ?= controller:latest
+UI_IMG ?= ui:latest
+MINIKUBE_PROFILE ?= minikube
+
+.PHONY: minikube-check
+minikube-check: ## Check minikube environment and dependencies.
+	@MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-check.sh
+
+.PHONY: minikube-build
+minikube-build: ## Build images locally for minikube (controller and UI).
+	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) ./scripts/minikube-build.sh
+
+.PHONY: minikube-load
+minikube-load: ## Load built images into minikube's Docker daemon.
+	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-load.sh
+
+.PHONY: minikube-deploy
+minikube-deploy: kustomize ## Deploy to minikube cluster (after loading images).
+	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-deploy.sh
+
+.PHONY: minikube-full
+minikube-full: ## Build, load, and deploy to minikube (full workflow).
+	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-full.sh
+
 ##@ Dependencies
 
 ## Location to install dependencies to
