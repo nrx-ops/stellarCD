@@ -39,7 +39,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	corev1alpha1 "github.com/nrx-ops/stellarCD/api/v1alpha1"
-	"github.com/nrx-ops/stellarCD/internal/controller"
 	"github.com/nrx-ops/stellarCD/internal/version"
 	// +kubebuilder:scaffold:imports
 )

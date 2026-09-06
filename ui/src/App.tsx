@@ -1,4 +1,3 @@
-import React from 'react'
 import StellarAppList from './components/StellarAppList'
 
 function App() {
