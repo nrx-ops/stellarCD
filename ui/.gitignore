@@ -22,3 +22,8 @@ dist-ssr
 *.swp
 *.swo
 *~
+
+# build artifacts from `tsc -b` (tsconfig.node.json is a composite project)
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

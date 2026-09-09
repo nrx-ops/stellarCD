@@ -1,0 +1,33 @@
+server {
+    listen 3000;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Probe target that does not depend on the SPA bundle being present.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Single-page app: unknown paths are client-side routes, not 404s.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # The dashboard never talks to the Kubernetes API server directly. Every read
+    # goes through the operator's admin API, which already holds the right
+    # ServiceAccount token, renews it automatically, and is covered by the
+    # manager's RBAC. That keeps cluster credentials out of the browser.
+    location /api/ {
+        proxy_pass ${ADMIN_API_URL};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 60s;
+    }
+}

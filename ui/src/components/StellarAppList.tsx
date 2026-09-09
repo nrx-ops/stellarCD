@@ -1,24 +1,25 @@
 import { useState } from 'react'
 import { useQuery } from 'react-query'
-import { listStellarApps, getNamespaces, StellarApp } from '../services/api'
+import { listStellarApps, getNamespaces, Phase, StellarApp } from '../services/api'
 import StellarAppDetail from './StellarAppDetail'
+
+// ALL_NAMESPACES is the sentinel for the "every namespace" selection; the API
+// treats an omitted namespace as cluster-wide.
+const ALL_NAMESPACES = ''
 
 export default function StellarAppList() {
   const [selectedApp, setSelectedApp] = useState<StellarApp | null>(null)
-  const [namespace, setNamespace] = useState('default')
+  const [namespace, setNamespace] = useState(ALL_NAMESPACES)
 
-  const { data: namespaces } = useQuery(
-    'namespaces',
-    getNamespaces
-  )
+  const { data: namespaces, error: namespacesError } = useQuery('namespaces', getNamespaces)
 
   const { data: apps, isLoading, error, refetch } = useQuery(
     ['stellarApps', namespace],
-    () => listStellarApps(namespace),
+    () => listStellarApps(namespace || undefined),
     { refetchInterval: 5000 }
   )
 
-  const getStatusColor = (status?: string) => {
+  const getStatusColor = (status?: Phase) => {
     switch (status) {
       case 'Synced':
         return 'bg-green-100 text-green-800'
@@ -48,6 +49,7 @@ export default function StellarAppList() {
             onChange={(e) => setNamespace(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg"
           >
+            <option value={ALL_NAMESPACES}>All namespaces</option>
             {(namespaces || []).map((ns) => (
               <option key={ns} value={ns}>
                 {ns}
@@ -62,6 +64,12 @@ export default function StellarAppList() {
             Refresh
           </button>
         </div>
+
+        {!!namespacesError && (
+          <p className="text-sm text-amber-700">
+            Could not load the namespace list; showing all namespaces.
+          </p>
+        )}
       </div>
 
       {isLoading && (
@@ -72,13 +80,17 @@ export default function StellarAppList() {
 
       {!!error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-          <p className="text-red-800">Failed to load StellarApps. Make sure the API proxy is configured.</p>
+          <p className="text-red-800">
+            Failed to load StellarApps. Check that the stellarCD admin API is reachable.
+          </p>
         </div>
       )}
 
       {apps && apps.length === 0 && (
         <div className="text-center py-8 text-gray-500">
-          No StellarApps found in namespace "{namespace}"
+          {namespace
+            ? `No StellarApps found in namespace "${namespace}"`
+            : 'No StellarApps found'}
         </div>
       )}
 
@@ -106,7 +118,12 @@ export default function StellarAppList() {
             <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-gray-600">Git Repository</p>
-                <p className="font-mono text-gray-900">{app.spec.gitRepository}</p>
+                <p className="font-mono text-gray-900 break-all">
+                  {app.spec.gitRepository.url}
+                  {app.spec.gitRepository.ref && (
+                    <span className="text-gray-500"> @ {app.spec.gitRepository.ref}</span>
+                  )}
+                </p>
               </div>
               <div>
                 <p className="text-gray-600">Terraform Path</p>

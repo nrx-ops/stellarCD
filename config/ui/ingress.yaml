@@ -1,0 +1,40 @@
+# Example Ingress for exposing the dashboard outside the cluster.
+#
+# Not enabled by default: it needs a real hostname, a matching TLS certificate
+# and an ingress controller. Uncomment it in kustomization.yaml once "host" and
+# the cert-manager issuer below match your environment.
+#
+# The admin API is unauthenticated and read-only, so put an authenticating proxy
+# in front of the dashboard before exposing it publicly. The commented
+# oauth2-proxy annotations below are the usual way to do that with ingress-nginx.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  namespace: system
+  labels:
+    app: stellarcd-ui
+    app.kubernetes.io/name: stellarcd
+    app.kubernetes.io/component: dashboard
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # nginx.ingress.kubernetes.io/auth-url: "http://oauth2-proxy:4180/oauth2/auth"
+    # nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - stellarcd.example.com
+    secretName: stellarcd-dashboard-tls
+  rules:
+  - host: stellarcd.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            # Rendered as "stellarcd-frontend" by the namePrefix in config/default.
+            name: frontend
+            port:
+              name: http

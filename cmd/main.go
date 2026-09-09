@@ -28,6 +28,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -39,6 +40,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	corev1alpha1 "github.com/nrx-ops/stellarCD/api/v1alpha1"
+	"github.com/nrx-ops/stellarCD/internal/adminapi"
+	"github.com/nrx-ops/stellarCD/internal/controller"
 	"github.com/nrx-ops/stellarCD/internal/version"
 	// +kubebuilder:scaffold:imports
 )
@@ -50,6 +53,8 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	// The admin API reports the CRDs actually installed in the cluster.
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 
 	utilruntime.Must(corev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
@@ -62,6 +67,7 @@ func main() {
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
 	var probeAddr string
+	var adminAPIAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var showVersion bool
@@ -69,6 +75,8 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&adminAPIAddr, "admin-api-bind-address", ":8080",
+		"The address the dashboard admin API binds to. Set to 0 to disable it.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -198,7 +206,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.StellarAppReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("stellarapp-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "StellarApp")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
+
+	if adminAPIAddr != "0" && adminAPIAddr != "" {
+		// Registering the server with the manager ties its lifecycle to the
+		// manager's: SIGTERM cancels the context and the server drains.
+		adminServer := &adminapi.Server{
+			// GetAPIReader bypasses the manager cache so the dashboard does not
+			// force cluster-wide watches on CRDs, Namespaces and Events.
+			Reader: mgr.GetAPIReader(),
+			Addr:   adminAPIAddr,
+			Log:    ctrl.Log.WithName("admin-api"),
+		}
+		if err := mgr.Add(adminServer); err != nil {
+			setupLog.Error(err, "Failed to register admin API server")
+			os.Exit(1)
+		}
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
@@ -209,30 +241,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start admin API server on port 8080
-	go startAdminAPIServer()
-
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
-}
-
-func startAdminAPIServer() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/admin/crds", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		type CRDInfo struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			Group   string `json:"group"`
-			Kind    string `json:"kind"`
-		}
-		crds := []CRDInfo{
-			{Name: "StellarApps", Version: "v1alpha1", Group: "core.stellarcd.io", Kind: "StellarApp"},
-		}
-		_ = json.NewEncoder(w).Encode(crds)
-	})
-	_ = http.ListenAndServe(":8080", mux)
 }

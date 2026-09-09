@@ -1,14 +1,21 @@
+# The name here is intentionally un-prefixed: config/default/kustomization.yaml
+# applies "namePrefix: stellarcd-", so this renders as "stellarcd-admin-api".
 apiVersion: v1
 kind: Service
 metadata:
-  name: stellarcd-admin-api
+  name: admin-api
   namespace: system
   labels:
     control-plane: controller-manager
+    app.kubernetes.io/name: stellarcd
+    app.kubernetes.io/managed-by: kustomize
 spec:
+  type: ClusterIP
   ports:
-  - port: 8080
-    targetPort: 8080
-    name: admin-api
+  - name: admin-api
+    port: 8080
+    protocol: TCP
+    targetPort: admin-api
   selector:
     control-plane: controller-manager
+    app.kubernetes.io/name: stellarcd

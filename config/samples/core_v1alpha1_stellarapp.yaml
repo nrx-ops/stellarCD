@@ -1,0 +1,17 @@
+apiVersion: core.stellarcd.io/v1alpha1
+kind: StellarApp
+metadata:
+  labels:
+    app.kubernetes.io/name: stellarcd
+    app.kubernetes.io/managed-by: kustomize
+  name: stellarapp-sample
+spec:
+  gitRepository:
+    url: https://github.com/nrx-ops/stellarcd-infra.git
+    ref: main
+    secretRef:
+      name: stellarapp-sample-git-creds
+  terraformPath: environments/staging
+  executor: Terragrunt
+  interval: 5m
+  autoApply: false
