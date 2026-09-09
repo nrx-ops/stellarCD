@@ -3,3 +3,6 @@ kind: Kustomization
 
 resources:
 - deployment.yaml
+# Uncomment to expose the dashboard through an Ingress. Set a real hostname in
+# ingress.yaml first; see the notes at the top of that file.
+#- ingress.yaml

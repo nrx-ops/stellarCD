@@ -13,7 +13,7 @@ spec:
     plural: stellarapps
     shortNames:
     - sapp
-    - stapps
+    - sapps
     singular: stellarapp
   scope: Namespaced
   versions:
@@ -22,7 +22,7 @@ spec:
       name: Git Repo
       type: string
     - jsonPath: .spec.terraformPath
-      name: Terraform Path
+      name: Path
       type: string
     - jsonPath: .status.phase
       name: Phase
@@ -33,7 +33,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: StellarApp is the Schema for the stellarapps API
+        description: StellarApp is the Schema for the stellarapps API.
         properties:
           apiVersion:
             description: |-
@@ -53,68 +53,140 @@ spec:
           metadata:
             type: object
           spec:
-            description: StellarAppSpec defines the desired state of StellarApp
+            description: StellarAppSpec defines the desired state of StellarApp.
             properties:
               autoApply:
-                description: AutoApply enables automatic application of terraform
-                  plans
+                default: false
+                description: |-
+                  AutoApply enables automatic application of Terraform plans. When false the
+                  controller stops after producing a plan.
                 type: boolean
               executor:
-                description: Executor is the tool to use for infrastructure changes
+                default: Terraform
+                description: Executor is the tool used to apply infrastructure changes.
                 enum:
                 - Terraform
                 - Terragrunt
                 type: string
               gitRepository:
-                description: GitRepository contains Git repository configuration
+                description: GitRepository contains the Git repository configuration.
                 properties:
                   ref:
-                    description: 'Ref is the Git branch/tag to track (default: main)'
+                    default: main
+                    description: Ref is the Git branch or tag to track.
+                    minLength: 1
                     type: string
                   secretRef:
-                    description: SecretRef is a reference to a Secret containing authentication
-                      credentials
+                    description: SecretRef references a Secret holding the Git authentication
+                      credentials.
                     properties:
                       name:
+                        description: Name is the name of the referenced Secret.
+                        minLength: 1
                         type: string
                     required:
                     - name
                     type: object
                   url:
-                    description: URL is the Git repository URL
+                    description: URL is the Git repository URL.
+                    minLength: 1
                     type: string
                 required:
                 - url
                 type: object
               interval:
-                description: Interval is the reconciliation interval (e.g., "5m")
+                default: 5m
+                description: Interval is the reconciliation interval, e.g. "5m".
                 type: string
               terraformPath:
                 description: TerraformPath is the path to the Terraform/Terragrunt
-                  directory in the Git repo
+                  directory in the Git repository.
+                minLength: 1
                 type: string
             required:
             - gitRepository
             - terraformPath
             type: object
           status:
-            description: StellarAppStatus defines the observed state of StellarApp
+            description: StellarAppStatus defines the observed state of StellarApp.
             properties:
+              conditions:
+                description: Conditions holds the machine-readable state of the StellarApp.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               lastError:
-                description: LastError contains the last error message
+                description: LastError contains the last error message, cleared on
+                  a successful sync.
                 type: string
               lastSyncTime:
                 description: LastSyncTime is the timestamp of the last successful
-                  sync
+                  sync.
                 format: date-time
                 type: string
               observedGeneration:
                 description: ObservedGeneration reflects the generation of the spec
-                  that was last processed
+                  that was last processed.
                 format: int64
                 type: integer
               phase:
-                description: Phase indicates the current phase of reconciliation
+                description: Phase is a coarse summary of the current reconciliation
+                  state.
                 type: string
             type: object
         type: object

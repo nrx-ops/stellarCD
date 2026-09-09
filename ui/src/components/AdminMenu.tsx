@@ -1,30 +1,16 @@
 import { useState } from 'react'
 import { useQuery } from 'react-query'
-import axios from 'axios'
-
-interface CRDInfo {
-  name: string
-  version: string
-  group: string
-  kind: string
-}
+import { listCRDs } from '../services/api'
 
 export default function AdminMenu() {
   const [showCRDs, setShowCRDs] = useState(false)
 
-  const { data: crds, isLoading } = useQuery<CRDInfo[]>(
-    'crds',
-    async () => {
-      try {
-        const response = await axios.get('http://stellarcd-admin-api:8080/api/v1/admin/crds')
-        return response.data
-      } catch (err) {
-        console.error('Failed to fetch CRDs:', err)
-        return []
-      }
-    },
-    { refetchInterval: 30000 }
-  )
+  // Read through the operator's admin API, which reports the CRDs actually
+  // installed in the cluster rather than a hard-coded list.
+  const { data: crds, isLoading, error } = useQuery('crds', listCRDs, {
+    enabled: showCRDs,
+    refetchInterval: showCRDs ? 30000 : false,
+  })
 
   return (
     <div className="border-t border-gray-200 p-4 mt-4">
@@ -43,29 +29,40 @@ export default function AdminMenu() {
             <div className="text-center py-4">
               <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600"></div>
             </div>
+          ) : error ? (
+            <p className="text-red-700 text-center py-4">Failed to load CRDs.</p>
           ) : crds && crds.length > 0 ? (
             <div className="space-y-2">
               {crds.map((crd) => (
-                <div
-                  key={`${crd.group}/${crd.kind}`}
-                  className="bg-white border border-gray-200 rounded p-3"
-                >
+                <div key={crd.name} className="bg-white border border-gray-200 rounded p-3">
                   <div className="flex justify-between items-start">
                     <div>
-                      <p className="font-semibold text-gray-900">{crd.name}</p>
+                      <p className="font-semibold text-gray-900 font-mono">{crd.name}</p>
                       <p className="text-sm text-gray-600">
-                        Kind: {crd.kind} | Group: {crd.group}
+                        Kind: {crd.kind} | Scope: {crd.scope}
                       </p>
                     </div>
-                    <span className="px-2 py-1 bg-blue-100 text-blue-800 text-sm rounded font-mono">
-                      v{crd.version}
-                    </span>
+                    <div className="flex gap-1 flex-wrap justify-end">
+                      {crd.versions.map((v) => (
+                        <span
+                          key={v}
+                          className={`px-2 py-1 text-sm rounded font-mono ${
+                            v === crd.storedVersion
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}
+                          title={v === crd.storedVersion ? 'Storage version' : 'Served version'}
+                        >
+                          {v}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="text-gray-500 text-center py-4">No CRDs deployed</p>
+            <p className="text-gray-500 text-center py-4">No stellarCD CRDs deployed</p>
           )}
         </div>
       )}

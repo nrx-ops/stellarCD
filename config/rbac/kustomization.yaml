@@ -23,3 +23,6 @@ resources:
 # not used by the stellarcd itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
 
+- stellarapp_admin_role.yaml
+- stellarapp_editor_role.yaml
+- stellarapp_viewer_role.yaml
