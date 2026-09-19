@@ -67,6 +67,50 @@ export interface CRDInfo {
   storedVersion: string
 }
 
+// Mirrors shared.AuthMethod: how a repository authenticates. The material
+// behind it is never sent to the browser.
+export type AuthMethod =
+  | 'None'
+  | 'SSHKey'
+  | 'GitHubApp'
+  | 'Token'
+  | 'BasicAuth'
+  | 'Unusable'
+
+// Mirrors shared.RepositoryState.
+export type RepositoryState =
+  | 'Connected'
+  | 'Unauthorized'
+  | 'NotFound'
+  | 'Unreachable'
+  | 'Misconfigured'
+  | 'Unsupported'
+  | 'Unknown'
+
+export interface RepositoryConnection {
+  state: RepositoryState
+  message: string
+  checkedAt: string
+  authMethod: AuthMethod
+}
+
+export interface RepositoryInfo {
+  kind: 'Astral' | 'StellarApp'
+  namespace: string
+  name: string
+  displayName?: string
+  universe?: string
+  galaxy?: string
+  provider?: string
+  url: string
+  branch?: string
+  path?: string
+  secretName?: string
+  secretScope?: string
+  secretMissing?: boolean
+  connection: RepositoryConnection
+}
+
 export interface AppEvent {
   type: string
   reason: string
@@ -104,5 +148,21 @@ export async function getStellarAppEvents(namespace: string, name: string): Prom
 
 export async function listCRDs(): Promise<CRDInfo[]> {
   const response = await client.get('/crds')
+  return response.data ?? []
+}
+
+// listRepositories runs a live connectivity check per repository server-side.
+// Pass check=false for the inventory alone, e.g. while the operator is known to
+// be offline. The operator caches each verdict, so polling is cheap.
+export async function listRepositories(
+  namespace?: string,
+  check = true
+): Promise<RepositoryInfo[]> {
+  const response = await client.get('/repositories', {
+    params: {
+      ...(namespace ? { namespace } : {}),
+      ...(check ? {} : { check: 'false' }),
+    },
+  })
   return response.data ?? []
 }

@@ -1,0 +1,123 @@
+{{- if and .Values.rbac.create .Values.rbac.tenantRoles.create }}
+{{/*
+Roles the Universe controller binds into each tenant namespace it provisions,
+against spec.rbac.adminUsers / spec.rbac.viewerUsers.
+
+The names are fixed constants (DefaultTenantAdminClusterRole and
+DefaultTenantViewerClusterRole in internal/controller/universe_controller.go)
+and are matched by resourceNames on the manager's "bind" verb, so they are NOT
+prefixed with the release name. Installing two releases of this chart in one
+cluster will therefore contend over these two objects.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stellarcd-tenant-admin
+  labels:
+    {{- include "stellarcd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tenant-rbac
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - galaxies
+      - astrals
+      - flares
+      - stellarapps
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - galaxies/status
+      - astrals/status
+      - flares/status
+      - stellarapps/status
+    verbs:
+      - get
+  {{/*
+  Universe is cluster-shaped tenancy configuration: a tenant admin reads their
+  own Universe but does not get to widen their own quota or isolation policy.
+  */}}
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - universes
+    verbs:
+      - get
+      - list
+      - watch
+  {{/*
+  Secrets are deliberately absent: they hold the cloud credentials and Git
+  tokens the operator injects into Terraform runs. Grant them per-namespace,
+  per-team if a tenant genuinely needs to manage its own.
+  */}}
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - events
+      - pods
+      - pods/log
+      - resourcequotas
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: stellarcd-tenant-viewer
+  labels:
+    {{- include "stellarcd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tenant-rbac
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - galaxies
+      - astrals
+      - flares
+      - stellarapps
+      - universes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - galaxies/status
+      - astrals/status
+      - flares/status
+      - stellarapps/status
+      - universes/status
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - events
+      - pods
+      - pods/log
+      - resourcequotas
+    verbs:
+      - get
+      - list
+      - watch
+{{- end }}

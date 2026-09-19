@@ -212,6 +212,56 @@ minikube-deploy: kustomize ## Deploy to minikube cluster (after loading images).
 minikube-full: ## Build, load, and deploy to minikube (full workflow).
 	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-full.sh
 
+##@ Helm
+
+HELM ?= helm
+CHART_DIR ?= charts/stellarcd
+HELM_RELEASE ?= stellarcd
+HELM_NAMESPACE ?= stellarcd-system
+
+.PHONY: helm-crds
+helm-crds: manifests ## Sync generated CRDs into the chart and apply them to the cluster.
+	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
+	kubectl apply -f $(CHART_DIR)/crds/
+
+.PHONY: helm-lint
+helm-lint: ## Lint the chart and render it with the default and minikube values.
+	$(HELM) lint $(CHART_DIR)
+	$(HELM) lint $(CHART_DIR) --values $(CHART_DIR)/values-minikube.yaml
+	$(HELM) template $(HELM_RELEASE) $(CHART_DIR) > /dev/null
+	$(HELM) template $(HELM_RELEASE) $(CHART_DIR) --values $(CHART_DIR)/values-minikube.yaml > /dev/null
+
+.PHONY: helm-template
+helm-template: ## Render the chart to stdout with the minikube values.
+	$(HELM) template $(HELM_RELEASE) $(CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--values $(CHART_DIR)/values-minikube.yaml
+
+.PHONY: helm-install
+helm-install: ## Install or upgrade the chart in the current kubectl context.
+	$(HELM) upgrade --install $(HELM_RELEASE) $(CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) --create-namespace \
+		--values $(CHART_DIR)/values-minikube.yaml \
+		--wait --timeout 5m
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall the release. CRDs and custom resources are left in place.
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-restart
+helm-restart: ## Restart the workloads so they pick up a freshly loaded image.
+	kubectl rollout restart deployment -n $(HELM_NAMESPACE) \
+		-l app.kubernetes.io/instance=$(HELM_RELEASE)
+	kubectl rollout status deployment -n $(HELM_NAMESPACE) \
+		-l app.kubernetes.io/instance=$(HELM_RELEASE) --timeout=5m
+
+# The restart is not redundant with helm-install. The chart pins ":latest" with
+# imagePullPolicy: IfNotPresent, so reloading the tag leaves the pod template
+# byte-identical and Helm has nothing to roll out -- the pods keep running the
+# previous image ID. Restarting is what makes this target deploy what it built.
+.PHONY: helm-minikube
+helm-minikube: minikube-build minikube-load helm-install helm-restart ## Build, load and Helm-install into minikube.
+
 ##@ Dependencies
 
 ## Location to install dependencies to

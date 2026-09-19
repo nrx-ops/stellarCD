@@ -1,0 +1,46 @@
+{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.serviceMonitor.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+{{- fail "controller.metrics.serviceMonitor.enabled requires the Prometheus Operator CRDs (monitoring.coreos.com/v1) to be installed in the cluster" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-controller-manager-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+    {{- with .Values.controller.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  endpoints:
+    - port: https
+      path: /metrics
+      {{- if .Values.controller.metrics.secure }}
+      scheme: https
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        {{- /*
+        The manager serves a self-signed cert by default. Point
+        controller.extraArgs at a cert-manager-issued one and set this to false
+        before trusting the scrape in production.
+        */}}
+        insecureSkipVerify: {{ .Values.controller.metrics.serviceMonitor.insecureSkipVerify }}
+      {{- else }}
+      scheme: http
+      {{- end }}
+      interval: {{ .Values.controller.metrics.serviceMonitor.interval }}
+      {{- with .Values.controller.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "stellarcd.controller.selectorLabels" . | nindent 6 }}
+{{- end }}

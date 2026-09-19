@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "stellarcd.controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        {{- with .Values.commonAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.controller.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "stellarcd.controller.selectorLabels" . | nindent 8 }}
+        {{- with .Values.controller.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "stellarcd.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: {{ include "stellarcd.controller.image" . }}
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          command:
+            - /manager
+          args:
+            - --health-probe-bind-address=:{{ .Values.controller.health.port }}
+            {{- if .Values.controller.leaderElection.enabled }}
+            - --leader-elect
+            {{- end }}
+            {{- if .Values.controller.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.controller.metrics.port }}
+            - --metrics-secure={{ .Values.controller.metrics.secure }}
+            {{- else }}
+            {{- /* "0" is the manager's documented "off" value for a bind address. */}}
+            - --metrics-bind-address=0
+            {{- end }}
+            {{- if .Values.controller.adminApi.enabled }}
+            - --admin-api-bind-address=:{{ .Values.controller.adminApi.port }}
+            {{- else }}
+            - --admin-api-bind-address=0
+            {{- end }}
+            {{- with .Values.controller.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- if .Values.controller.adminApi.enabled }}
+            - name: admin-api
+              containerPort: {{ .Values.controller.adminApi.port }}
+              protocol: TCP
+            {{- end }}
+            - name: health
+              containerPort: {{ .Values.controller.health.port }}
+              protocol: TCP
+            {{- if .Values.controller.metrics.enabled }}
+            - name: https
+              containerPort: {{ .Values.controller.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            {{- /*
+            git and the Terraform CLI both resolve $HOME for their config and
+            plugin caches. The distroless base sets it to /home/nonroot, which
+            is not writable under readOnlyRootFilesystem, so point it at the
+            tmp volume instead.
+            */}}
+            - name: HOME
+              value: /tmp
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.controller.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.controller.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.controller.securityContext | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: {{ .Values.controller.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.controller.livenessProbe.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: {{ .Values.controller.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.controller.readinessProbe.periodSeconds }}
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          volumeMounts:
+            {{- /*
+            readOnlyRootFilesystem is on, so every path the manager writes to
+            needs a volume: /tmp for $HOME and scratch, and the workspace root
+            for Git checkouts and Terraform state directories.
+            */}}
+            - name: tmp
+              mountPath: /tmp
+            - name: workspace
+              mountPath: {{ .Values.controller.workspace.mountPath }}
+            {{- with .Values.controller.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: workspace
+        {{- if eq .Values.controller.workspace.type "persistentVolumeClaim" }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.controller.workspace.persistentVolumeClaim.existingClaim | default (printf "%s-workspace" (include "stellarcd.fullname" .)) }}
+        {{- else }}
+          emptyDir:
+            {{- with .Values.controller.workspace.emptyDir.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+            {{- with .Values.controller.workspace.emptyDir.medium }}
+            medium: {{ . }}
+            {{- end }}
+        {{- end }}
+        {{- with .Values.controller.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.controller.terminationGracePeriodSeconds }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

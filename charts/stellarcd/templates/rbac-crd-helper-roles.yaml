@@ -1,0 +1,51 @@
+{{- if and .Values.rbac.create .Values.rbac.crdHelperRoles.create }}
+{{/*
+Convenience roles for delegating access to humans. The operator itself never
+uses them; they exist so a cluster admin can hand out per-kind access without
+hand-writing RBAC.
+*/}}
+{{- $fullname := include "stellarcd.fullname" . }}
+{{- $labels := include "stellarcd.labels" . }}
+{{- $annotations := include "stellarcd.annotations" . }}
+{{- $kinds := list
+      (dict "singular" "stellarapp" "plural" "stellarapps")
+      (dict "singular" "universe"   "plural" "universes")
+      (dict "singular" "galaxy"     "plural" "galaxies")
+      (dict "singular" "astral"     "plural" "astrals")
+      (dict "singular" "flare"      "plural" "flares")
+}}
+{{- $tiers := list
+      (dict "name" "admin"  "verbs" (list "*"))
+      (dict "name" "editor" "verbs" (list "create" "delete" "get" "list" "patch" "update" "watch"))
+      (dict "name" "viewer" "verbs" (list "get" "list" "watch"))
+}}
+{{- range $kind := $kinds }}
+{{- range $tier := $tiers }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}-{{ $kind.singular }}-{{ $tier.name }}-role
+  labels:
+    {{- $labels | nindent 4 }}
+    app.kubernetes.io/component: crd-helper-rbac
+  {{- with $annotations }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - {{ $kind.plural }}
+    verbs:
+      {{- toYaml $tier.verbs | nindent 6 }}
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - {{ $kind.plural }}/status
+    verbs:
+      - get
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,61 @@
+# Local minikube preset.
+#
+#   make minikube-build            # builds controller:latest and ui:latest
+#   minikube image load ...        # or eval $(minikube docker-env) before building
+#   helm upgrade --install stellarcd charts/stellarcd \
+#     -n stellarcd-system --create-namespace \
+#     -f charts/stellarcd/values-minikube.yaml
+
+controller:
+  image:
+    repository: controller
+    tag: latest
+    # The image only exists in minikube's local daemon; pulling would fail.
+    pullPolicy: IfNotPresent
+
+  # Single node, single replica: leader election only adds a Lease to watch.
+  replicaCount: 1
+  leaderElection:
+    enabled: false
+
+  # Plain HTTP metrics so `kubectl port-forward` + curl works without a token.
+  # Do not carry this setting into a shared cluster.
+  metrics:
+    enabled: true
+    secure: false
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+ui:
+  enabled: true
+  image:
+    repository: ui
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Reachable via `minikube service`, matching the old kustomize overlay's port.
+  service:
+    type: NodePort
+    nodePort: 30300
+
+  # Route the dashboard through the Istio ingress gateway. This lives in the
+  # values file rather than in a --set on the command line because
+  # "make helm-minikube" installs from this file alone: a flag passed by hand
+  # is silently dropped on the next deploy, taking the route down with it.
+  # Needs charts/stellarcd/examples/istio-gateway.yaml applied once.
+  virtualService:
+    enabled: true
+    gateways:
+      - istio-system/stellarcd-gateway
+    hosts:
+      - stellearcd.local
+
+# minikube's default bridge CNI silently ignores NetworkPolicy, so an enabled
+# policy here would give a false sense of isolation.
+networkPolicy:
+  enabled: false

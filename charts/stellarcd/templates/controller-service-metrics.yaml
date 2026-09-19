@@ -1,0 +1,22 @@
+{{- if .Values.controller.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-controller-manager-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.controller.metrics.service.annotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.controller.metrics.service.type }}
+  ports:
+    - name: https
+      port: {{ .Values.controller.metrics.service.port }}
+      targetPort: https
+      protocol: TCP
+  selector:
+    {{- include "stellarcd.controller.selectorLabels" . | nindent 4 }}
+{{- end }}

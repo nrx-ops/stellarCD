@@ -1,0 +1,361 @@
+# Default values for the stellarcd chart.
+# Every value here is overridable with `--set` or a custom values file.
+
+# -- Overrides the chart name used to build resource names.
+nameOverride: ""
+# -- Replaces the full generated resource name prefix ("<release>-<chart>").
+fullnameOverride: ""
+
+# -- Pull secrets applied to every pod in the chart.
+imagePullSecrets: []
+# - name: my-registry-credentials
+
+# -- Labels added to every object rendered by the chart.
+commonLabels: {}
+# -- Annotations added to every object rendered by the chart.
+commonAnnotations: {}
+
+# Custom Resource Definitions.
+#
+# The CRD manifests live in charts/stellarcd/crds/. Helm installs that directory
+# automatically on `helm install` and, by design, never upgrades or deletes it.
+# Existing Universe/Galaxy/Astral/Flare/StellarApp objects therefore survive a
+# `helm uninstall` instead of being garbage-collected with the release.
+#
+# To roll out a CRD schema change, apply the directory explicitly:
+#   kubectl apply -f charts/stellarcd/crds/     (or: make helm-crds)
+crds:
+  # -- Skip CRD installation entirely (`helm install --skip-crds` equivalent,
+  # for clusters where a separate process owns the CRD lifecycle). Informational
+  # only: Helm's own --skip-crds flag is what actually suppresses them.
+  skipInstall: false
+
+serviceAccount:
+  # -- Create the controller ServiceAccount. Disable to reuse an existing one.
+  create: true
+  # -- Name of the ServiceAccount. Generated from the release name when empty.
+  name: ""
+  # -- Annotations on the ServiceAccount (e.g. IRSA / Workload Identity bindings).
+  annotations: {}
+  # -- Mount the ServiceAccount token into the controller pod. Required: the
+  # manager authenticates to the API server with it.
+  automountServiceAccountToken: true
+
+rbac:
+  # -- Create the ClusterRole/Role and their bindings for the controller.
+  create: true
+  # -- Create the stellarcd-tenant-admin / stellarcd-tenant-viewer ClusterRoles.
+  # The Universe controller binds these into each tenant namespace it provisions,
+  # so leave this on unless another process already manages them.
+  tenantRoles:
+    create: true
+  # -- Create the per-CRD admin/editor/viewer helper ClusterRoles. Not used by
+  # the operator itself; they exist to delegate access to human users.
+  crdHelperRoles:
+    create: false
+  # -- Create the metrics-reader ClusterRole granting GET on /metrics.
+  metricsReader:
+    create: true
+
+controller:
+  # -- Number of manager replicas. Only the leader reconciles; the rest stand by.
+  replicaCount: 1
+
+  image:
+    repository: controller
+    # -- Image tag. Falls back to the chart's appVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Where Git checkouts and Terraform/Terragrunt working directories land.
+  # The manager runs with a read-only root filesystem, so this path must be
+  # backed by a writable volume or every run fails on checkout.
+  workspace:
+    mountPath: /var/lib/stellarcd/workspaces
+    # -- "emptyDir" or "persistentVolumeClaim". emptyDir is wiped on every pod
+    # restart, which costs a full re-clone and re-`init` but never goes stale.
+    # Use a PVC to keep provider plugins and module caches across restarts.
+    type: emptyDir
+    emptyDir:
+      sizeLimit: 2Gi
+      # -- Set to "Memory" for a tmpfs-backed workspace (counts against the
+      # container's memory limit).
+      medium: ""
+    persistentVolumeClaim:
+      # -- Bind an already-provisioned claim instead of letting the chart create one.
+      existingClaim: ""
+      storageClassName: ""
+      accessModes:
+        - ReadWriteOnce
+      size: 10Gi
+
+  leaderElection:
+    # -- Leader election guards against two managers reconciling the same
+    # Terraform state at once. Keep enabled whenever replicaCount > 1.
+    enabled: true
+
+  adminApi:
+    # -- Read-only HTTP API the dashboard reads cluster state through.
+    enabled: true
+    port: 8080
+    service:
+      type: ClusterIP
+      port: 8080
+      annotations: {}
+
+  health:
+    # -- Port serving /healthz and /readyz.
+    port: 8081
+
+  metrics:
+    # -- Serve Prometheus metrics.
+    enabled: true
+    # -- Require authn/authz (TokenReview + SubjectAccessReview) on /metrics.
+    # Disabling serves them over plain HTTP to anything that can reach the pod.
+    secure: true
+    port: 8443
+    service:
+      type: ClusterIP
+      port: 8443
+      annotations: {}
+    serviceMonitor:
+      # -- Requires the Prometheus Operator CRDs to be installed.
+      enabled: false
+      interval: 30s
+      scrapeTimeout: ""
+      # -- Extra labels, typically the `release: <prometheus>` selector.
+      labels: {}
+      # -- Skips TLS verification of the metrics endpoint's self-signed cert.
+      # Set false and supply certs via controller.extraArgs in production.
+      insecureSkipVerify: true
+
+  # -- Verbosity/format flags for the zap logger and any other manager flags.
+  extraArgs: []
+  # - --zap-log-level=debug
+
+  # -- Extra environment variables for the manager container.
+  env: []
+  # - name: HTTP_PROXY
+  #   value: http://proxy.internal:3128
+
+  # -- Extra environment variables sourced from ConfigMaps/Secrets.
+  envFrom: []
+
+  # -- Extra volumes and mounts, e.g. cloud credentials or a Terraform plugin cache.
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # The chart targets the "restricted" Pod Security Standard by default.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  # -- Grace period for in-flight Terraform runs to abort on SIGTERM.
+  terminationGracePeriodSeconds: 10
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+    # maxUnavailable: 1
+
+ui:
+  # -- Deploy the dashboard. The operator works fine without it.
+  enabled: true
+
+  replicaCount: 1
+
+  image:
+    repository: ui
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # -- URL the dashboard's nginx proxies /api to. Defaults to the in-cluster
+  # admin API Service when empty. The browser never holds cluster credentials:
+  # every Kubernetes read goes through the operator's admin API.
+  adminApiUrl: ""
+
+  containerPort: 3000
+
+  service:
+    type: ClusterIP
+    port: 3000
+    # -- Only honoured when type is NodePort. Leave empty to let Kubernetes pick.
+    nodePort: ""
+    annotations: {}
+
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    #  cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: stellarcd.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    # - secretName: stellarcd-dashboard-tls
+    #   hosts:
+    #     - stellarcd.example.com
+
+  # Gateway API equivalent of the Ingress above. Both can be enabled at once
+  # while migrating, but leaving both on permanently means two independent paths
+  # to the same Service.
+  httpRoute:
+    enabled: false
+    # -- Pin the Gateway API version. Empty auto-detects v1, then v1beta1, and
+    # falls back to v1 when neither is installed (e.g. under `helm template`).
+    apiVersion: ""
+    annotations: {}
+    labels: {}
+    # -- Gateways this route attaches to. At least one is required.
+    parentRefs:
+      - name: stellarcd-gateway
+        # Defaults to the release namespace. The Gateway's allowedRoutes must
+        # permit this namespace for the route to bind.
+        # namespace: gateway-system
+        # Attach to one named listener instead of every matching one.
+        # sectionName: https
+        # port: 443
+    hostnames:
+      - stellarcd.example.com
+    # -- Routing rules. Empty renders a single PathPrefix "/" rule pointing at
+    # the dashboard Service. A rule without backendRefs gets that same default,
+    # so overriding this is usually about matches, filters or timeouts.
+    rules: []
+    # - matches:
+    #     - path:
+    #         type: PathPrefix
+    #         value: /
+    #   filters:
+    #     - type: RequestHeaderModifier
+    #       requestHeaderModifier:
+    #         set:
+    #           - name: X-Forwarded-Proto
+    #             value: https
+    #   timeouts:
+    #     request: 60s
+
+  # Istio equivalent of the two options above. Requires the Istio CRDs and a
+  # control plane; the dashboard namespace usually also needs sidecar injection
+  # or an ambient waypoint for the mesh to apply the route.
+  virtualService:
+    enabled: false
+    # -- Pin the Istio API version. Empty auto-detects v1, then v1beta1, then
+    # v1alpha3, and falls back to v1beta1 when none is installed (e.g. under
+    # `helm template`). v1beta1 is the fallback because it is served by every
+    # Istio from 1.6 onwards, while v1 needs 1.22+.
+    apiVersion: ""
+    annotations: {}
+    labels: {}
+    # -- Gateways to bind to, as "<name>" in this namespace or
+    # "<namespace>/<name>" elsewhere. The reserved word "mesh" applies the route
+    # to sidecar-to-sidecar traffic. An empty list means mesh-internal only,
+    # which is valid but will not expose the dashboard outside the cluster.
+    gateways:
+      - istio-system/stellarcd-gateway
+    # -- Required and must not be empty: a VirtualService with no hosts matches
+    # nothing. Use "*" to match any host arriving through the bound gateways.
+    hosts:
+      - stellarcd.example.com
+    # -- Namespaces the config is visible to. Empty uses Istio's default (".",
+    # meaning the current namespace, or "*" depending on the mesh config).
+    exportTo: []
+    # -- HTTP routes. Empty renders a single prefix "/" route to the dashboard
+    # Service; a route without a `route` block gets that same destination, so
+    # overriding this is usually about match, timeout, retries or corsPolicy.
+    http: []
+    # - match:
+    #     - uri:
+    #         prefix: /
+    #   timeout: 60s
+    #   retries:
+    #     attempts: 3
+    #     perTryTimeout: 10s
+
+  env: []
+  envFrom: []
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # The stock nginx image starts its master process as root -- it templates the
+  # config, chowns its cache dirs, then drops workers to the "nginx" user -- so
+  # runAsNonRoot is not set here. Switch the image to nginxinc/nginx-unprivileged
+  # and set runAsNonRoot/runAsUser below to close that gap.
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  # nginx writes its pid, templated config and cache dirs at start-up, so the
+  # root filesystem stays writable here while the manager's does not.
+  #
+  # The three capabilities added back are what the master process needs to hand
+  # its cache directories to the unprivileged "nginx" user (CHOWN) and to drop
+  # the workers to it (SETUID/SETGID). Removing them fails start-up with
+  # `chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)`.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - CHOWN
+        - SETGID
+        - SETUID
+
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+networkPolicy:
+  # -- Restrict ingress to the metrics and admin API ports. Requires a CNI that
+  # enforces NetworkPolicy (minikube's default bridge CNI does not).
+  enabled: false
+  # -- Namespaces allowed to scrape /metrics, matched on this label selector.
+  metricsNamespaceSelector:
+    matchLabels:
+      metrics: enabled

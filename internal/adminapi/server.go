@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -62,6 +63,11 @@ type Server struct {
 	// Addr is the listen address, e.g. ":8080".
 	Addr string
 	Log  logr.Logger
+
+	// probeMu guards probeCache, which memoises repository connectivity checks
+	// so a polling dashboard does not re-mint a token per repository per poll.
+	probeMu    sync.Mutex
+	probeCache map[probeKey]cachedProbe
 }
 
 // NeedLeaderElection reports that the dashboard API must be served by every
@@ -118,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/stellarapps", s.handleListStellarApps)
 	mux.HandleFunc("GET /api/v1/stellarapps/{namespace}/{name}", s.handleGetStellarApp)
 	mux.HandleFunc("GET /api/v1/stellarapps/{namespace}/{name}/events", s.handleListEvents)
+	mux.HandleFunc("GET /api/v1/repositories", s.handleListRepositories)
 	return mux
 }
 

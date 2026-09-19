@@ -1,0 +1,56 @@
+stellarCD {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Watch the operator come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "stellarcd.fullname" . }}-controller-manager
+  kubectl -n {{ .Release.Namespace }} logs -f deployment/{{ include "stellarcd.fullname" . }}-controller-manager
+
+Registered custom resources:
+
+  kubectl get crd -l app.kubernetes.io/part-of={{ include "stellarcd.name" . }} 2>/dev/null || kubectl get crd | grep core.stellarcd.io
+
+{{- if .Values.ui.enabled }}
+
+Dashboard:
+{{- if .Values.ui.ingress.enabled }}
+{{- range .Values.ui.ingress.hosts }}
+  http{{ if $.Values.ui.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else if eq .Values.ui.service.type "NodePort" }}
+  minikube -n {{ .Release.Namespace }} service {{ include "stellarcd.fullname" . }}-frontend --url
+
+  Or on any cluster:
+    kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
+    # then browse to <node-ip>:<nodePort> from `kubectl -n {{ .Release.Namespace }} get svc {{ include "stellarcd.fullname" . }}-frontend`
+{{- else if eq .Values.ui.service.type "LoadBalancer" }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "stellarcd.fullname" . }}-frontend -w
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "stellarcd.fullname" . }}-frontend 3000:{{ .Values.ui.service.port }}
+  # then open http://localhost:3000
+{{- end }}
+
+  The dashboard and the admin API behind it are unauthenticated. Keep them
+  inside the cluster, or put an authenticating proxy in front, before exposing
+  them to anyone you would not hand a read-only kubeconfig.
+{{- end }}
+
+{{- if .Values.controller.metrics.enabled }}
+
+Metrics are served on :{{ .Values.controller.metrics.port }}{{ if .Values.controller.metrics.secure }} over HTTPS, gated by TokenReview/SubjectAccessReview.
+Bind {{ include "stellarcd.fullname" . }}-metrics-reader to your Prometheus ServiceAccount to allow scraping{{ else }} over plain HTTP with no authentication{{ end }}.
+{{- if not .Values.controller.metrics.serviceMonitor.enabled }}
+Set controller.metrics.serviceMonitor.enabled=true if you run the Prometheus Operator.
+{{- end }}
+{{- end }}
+
+{{- if eq .Values.controller.workspace.type "emptyDir" }}
+
+Git checkouts land on an emptyDir at {{ .Values.controller.workspace.mountPath }} and are lost on
+every pod restart, forcing a re-clone and a fresh `terraform init`. Set
+controller.workspace.type=persistentVolumeClaim to keep them.
+{{- end }}
+
+CRD schema changes are NOT applied by `helm upgrade` -- Helm never touches the
+crds/ directory after install. Apply them yourself:
+
+  kubectl apply -f charts/stellarcd/crds/

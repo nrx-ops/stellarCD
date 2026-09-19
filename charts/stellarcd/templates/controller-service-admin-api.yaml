@@ -1,0 +1,27 @@
+{{- if .Values.controller.adminApi.enabled }}
+{{/*
+Read-only API the dashboard proxies to. It performs no authentication of its
+own, so it stays ClusterIP: put an authenticating proxy in front of the
+dashboard rather than exposing this Service directly.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "stellarcd.adminApiServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.controller.adminApi.service.annotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.controller.adminApi.service.type }}
+  ports:
+    - name: admin-api
+      port: {{ .Values.controller.adminApi.service.port }}
+      targetPort: admin-api
+      protocol: TCP
+  selector:
+    {{- include "stellarcd.controller.selectorLabels" . | nindent 4 }}
+{{- end }}
