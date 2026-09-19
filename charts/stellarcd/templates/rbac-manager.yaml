@@ -1,0 +1,150 @@
+{{- if .Values.rbac.create }}
+{{/*
+Permissions the reconcilers need. Kept in sync with the +kubebuilder:rbac
+markers in internal/controller; regenerate config/rbac/role.yaml with
+`make manifests` and mirror any change here.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-manager-role
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - namespaces
+      - resourcequotas
+      - secrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - get
+      - list
+      - patch
+      - watch
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - astrals
+      - flares
+      - galaxies
+      - stellarapps
+      - universes
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - astrals/finalizers
+      - flares/finalizers
+      - galaxies/finalizers
+      - stellarapps/finalizers
+      - universes/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - core.stellarcd.io
+    resources:
+      - astrals/status
+      - flares/status
+      - galaxies/status
+      - stellarapps/status
+      - universes/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - rolebindings
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  {{- if .Values.rbac.tenantRoles.create }}
+  {{/*
+  "bind" lets the Universe controller grant these two roles inside tenant
+  namespaces without holding their permissions itself (privilege-escalation
+  prevention). resourceNames pins it to exactly these roles. The names are
+  constants in internal/controller/universe_controller.go, so they are not
+  templated on the release name.
+  */}}
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - clusterroles
+    resourceNames:
+      - stellarcd-tenant-admin
+      - stellarcd-tenant-viewer
+    verbs:
+      - bind
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-manager-rolebinding
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "stellarcd.fullname" . }}-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "stellarcd.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

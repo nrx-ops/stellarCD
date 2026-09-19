@@ -1,0 +1,85 @@
+# stellarCD objects representing the 4sh/4sh-cirrus-iac repository.
+#
+# There is no standalone "Repository" kind: a repository is located by
+# Astral.spec.vcsRepository, and an Astral is always born inside a Galaxy inside
+# a Universe. The three objects below are the smallest complete chain that makes
+# this repository reconcilable.
+#
+# The clone credentials are NOT in this file. Create them separately, using one
+# of the layouts the operator reads. A GitHub App:
+#
+#   kubectl create secret generic github-4sh \
+#     --namespace stellar-cirrus \
+#     --from-literal=githubAppID='<numeric app id>' \
+#     --from-file=githubAppPrivateKey=/path/to/app.private-key.pem
+#
+# or a personal access token:
+#
+#   kubectl create secret generic github-4sh \
+#     --namespace stellar-cirrus \
+#     --from-literal=token='<github personal access token>'
+#
+# Accepted keys are `sshPrivateKey`, `githubAppID` + `githubAppPrivateKey`
+# (optionally `githubAppInstallationID`), `username` + `password`, or `token`
+# (an alias for `password`, which is what a PAT actually is). When `username` is
+# omitted it defaults to "stellarcd", which every supported provider accepts
+# next to a token. See config/samples/cinng-iac.yaml for the App details.
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Universe
+metadata:
+  name: cirrus
+  labels:
+    app.kubernetes.io/name: stellarcd
+spec:
+  displayName: Cirrus
+  description: Tenant owning the Cirrus infrastructure-as-code estate.
+  # The controller derives the isolation namespace as "stellar-" + metadata.name,
+  # so every Galaxy, Astral and Flare below lands in "stellar-cirrus".
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Galaxy
+metadata:
+  name: cirrus-iac
+  namespace: stellar-cirrus
+spec:
+  universeRef: cirrus
+  displayName: Cirrus IaC
+  description: Astrals backed by the 4sh/4sh-cirrus-iac repository.
+  defaultVCSProvider: GitHub
+  defaultVCSURL: https://github.com
+  # Credentials are set once here and inherited by every Astral in this Galaxy.
+  # An Astral only needs its own secretRef when it reads a different repository.
+  vcsSecretRef:
+    name: github-4sh
+  terrarium:
+    engine: Terraform
+  # RequiresReview is the default and the safe choice: a Plan runs unattended,
+  # anything that mutates infrastructure waits for an explicit approval.
+  approvalPolicy: RequiresReview
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Astral
+metadata:
+  name: cirrus-iac
+  namespace: stellar-cirrus
+spec:
+  universeRef: cirrus
+  galaxyRef: cirrus-iac
+  displayName: Cirrus IaC root module
+  description: Root module of the 4sh/4sh-cirrus-iac repository.
+  vcsRepository:
+    provider: GitHub
+    url: https://github.com/4sh/4sh-cirrus-iac
+    branch: main
+    # "." is the repository root. Point this at a subdirectory if the root
+    # module lives deeper -- one Astral is one directory, one state.
+    path: .
+  workspaceName: default
+  # Serialise runs against this state. Only turn it off for read-only modules.
+  enableLocking: true
+  # Plan on pull requests, but never apply automatically: the first runs against
+  # a repository nobody has reconciled yet should be read by a human.
+  planOnPR: true
+  applyOnMerge: false
+  autoApply: false

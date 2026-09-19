@@ -1,0 +1,103 @@
+{{- if and .Values.ui.enabled .Values.ui.virtualService.enabled }}
+{{- if not .Values.ui.virtualService.hosts }}
+{{- fail "ui.virtualService.enabled requires at least one entry in ui.virtualService.hosts: a VirtualService with no hosts matches no traffic" }}
+{{- end }}
+{{/*
+Istio route to the dashboard, the mesh-native alternative to ui-ingress.yaml
+and ui-httproute.yaml.
+
+As with those two: the admin API behind this dashboard is unauthenticated and
+read-only. Bind an Istio AuthorizationPolicy or a RequestAuthentication to the
+workload before routing to it from outside the mesh -- a VirtualService routes
+traffic, it does not authenticate it.
+*/}}
+{{- $apiVersion := .Values.ui.virtualService.apiVersion }}
+{{- if not $apiVersion }}
+  {{- if .Capabilities.APIVersions.Has "networking.istio.io/v1" }}
+    {{- $apiVersion = "networking.istio.io/v1" }}
+  {{- else if .Capabilities.APIVersions.Has "networking.istio.io/v1beta1" }}
+    {{- $apiVersion = "networking.istio.io/v1beta1" }}
+  {{- else if .Capabilities.APIVersions.Has "networking.istio.io/v1alpha3" }}
+    {{- $apiVersion = "networking.istio.io/v1alpha3" }}
+  {{- else }}
+    {{- /* Served by every Istio from 1.6 on; v1 only exists from 1.22. */}}
+    {{- $apiVersion = "networking.istio.io/v1beta1" }}
+  {{- end }}
+{{- end }}
+apiVersion: {{ $apiVersion }}
+kind: VirtualService
+metadata:
+  name: {{ include "stellarcd.ui.serviceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.ui.labels" . | nindent 4 }}
+    {{- with .Values.ui.virtualService.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.ui.virtualService.annotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  hosts:
+    {{- toYaml .Values.ui.virtualService.hosts | nindent 4 }}
+  {{- with .Values.ui.virtualService.gateways }}
+  gateways:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.ui.virtualService.exportTo }}
+  exportTo:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  http:
+    {{- if .Values.ui.virtualService.http }}
+    {{- range $route := .Values.ui.virtualService.http }}
+    {{- /*
+    The route destination is emitted first so the "-" list marker always has a
+    key to attach to, whatever combination of optional blocks is supplied.
+    */}}
+    - route:
+        {{- if $route.route }}
+        {{- toYaml $route.route | nindent 8 }}
+        {{- else }}
+        - destination:
+            host: {{ include "stellarcd.ui.serviceFQDN" $ }}
+            port:
+              number: {{ $.Values.ui.service.port }}
+        {{- end }}
+      {{- with $route.match }}
+      match:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $route.rewrite }}
+      rewrite:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $route.headers }}
+      headers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $route.corsPolicy }}
+      corsPolicy:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $route.retries }}
+      retries:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $route.timeout }}
+      timeout: {{ . }}
+      {{- end }}
+    {{- end }}
+    {{- else }}
+    {{- /* The dashboard is a single-page app: one prefix match covers it. */}}
+    - route:
+        - destination:
+            host: {{ include "stellarcd.ui.serviceFQDN" . }}
+            port:
+              number: {{ .Values.ui.service.port }}
+      match:
+        - uri:
+            prefix: /
+    {{- end }}
+{{- end }}

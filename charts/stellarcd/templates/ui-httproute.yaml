@@ -1,0 +1,102 @@
+{{- if and .Values.ui.enabled .Values.ui.httpRoute.enabled }}
+{{- if not .Values.ui.httpRoute.parentRefs }}
+{{- fail "ui.httpRoute.enabled requires at least one entry in ui.httpRoute.parentRefs: an HTTPRoute that attaches to no Gateway is never programmed" }}
+{{- end }}
+{{/*
+Gateway API route to the dashboard, the successor to ui-ingress.yaml.
+
+The API version is resolved against the cluster rather than hardcoded: the
+Gateway API graduated HTTPRoute to v1 in 1.0, but clusters still on the v1beta1
+CRDs are common. `helm template` reports no cluster capabilities at all, so the
+fallback keeps rendering offline instead of failing.
+*/}}
+{{- $apiVersion := .Values.ui.httpRoute.apiVersion }}
+{{- if not $apiVersion }}
+  {{- if .Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1" }}
+    {{- $apiVersion = "gateway.networking.k8s.io/v1" }}
+  {{- else if .Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1beta1" }}
+    {{- $apiVersion = "gateway.networking.k8s.io/v1beta1" }}
+  {{- else }}
+    {{- $apiVersion = "gateway.networking.k8s.io/v1" }}
+  {{- end }}
+{{- end }}
+{{/*
+As with the Ingress: the admin API behind this dashboard is unauthenticated and
+read-only. Put an authenticating filter or an ExtAuth-capable Gateway in front
+before routing to it from outside the cluster.
+*/}}
+apiVersion: {{ $apiVersion }}
+kind: HTTPRoute
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.ui.labels" . | nindent 4 }}
+    {{- with .Values.ui.httpRoute.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.ui.httpRoute.annotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- range $ref := .Values.ui.httpRoute.parentRefs }}
+    - name: {{ $ref.name }}
+      {{- /* Omitted namespace means the Gateway lives alongside the release. */}}
+      namespace: {{ $ref.namespace | default $.Release.Namespace }}
+      {{- with $ref.sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+      {{- with $ref.port }}
+      port: {{ . }}
+      {{- end }}
+      {{- with $ref.group }}
+      group: {{ . }}
+      {{- end }}
+      {{- with $ref.kind }}
+      kind: {{ . }}
+      {{- end }}
+    {{- end }}
+  {{- with .Values.ui.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- if .Values.ui.httpRoute.rules }}
+    {{- range $rule := .Values.ui.httpRoute.rules }}
+    {{- /*
+    backendRefs is emitted first so the "-" list marker always has a key to
+    attach to, whatever combination of optional blocks a rule defines.
+    */}}
+    - backendRefs:
+        {{- if $rule.backendRefs }}
+        {{- toYaml $rule.backendRefs | nindent 8 }}
+        {{- else }}
+        - name: {{ include "stellarcd.fullname" $ }}-frontend
+          port: {{ $.Values.ui.service.port }}
+        {{- end }}
+      {{- with $rule.matches }}
+      matches:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $rule.filters }}
+      filters:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $rule.timeouts }}
+      timeouts:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- else }}
+    {{- /* The dashboard is a single-page app: one prefix match covers it. */}}
+    - backendRefs:
+        - name: {{ include "stellarcd.fullname" . }}-frontend
+          port: {{ .Values.ui.service.port }}
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+    {{- end }}
+{{- end }}

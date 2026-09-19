@@ -1,0 +1,99 @@
+# stellarCD objects representing the 4sh/cinng-iac repository.
+#
+# Same three-level chain as cirrus-iac.yaml: a repository is located by
+# Astral.spec.vcsRepository, and an Astral needs an owning Galaxy and Universe.
+#
+# CREDENTIALS: the Galaxy points at a Secret named "github-4sh" resolved in this
+# Astral's own namespace (stellar-cinng), not in stellarcd-system. The operator
+# reads one of these key layouts, in this order, and nothing else:
+#
+#   sshPrivateKey                          staged to a 0600 file, used via GIT_SSH_COMMAND
+#   githubAppID + githubAppPrivateKey      GitHub App; a fresh installation token is
+#                                          minted per run and expires about an hour later
+#   username + password                    written to a git credential-store file
+#   token                                  alias for password; username defaults to "stellarcd"
+#
+# githubAppInstallationID is optional: without it the installation is discovered
+# from the repository, which costs one API call and survives a reinstall.
+#
+# Build the GitHub App Secret from the App id and its PEM private key:
+#
+#   kubectl create secret generic github-4sh \
+#     --namespace stellar-cinng \
+#     --from-literal=githubAppID='<numeric app id>' \
+#     --from-file=githubAppPrivateKey=/path/to/app.private-key.pem
+#
+# The App must be installed on this repository. An App whose installation is set
+# to "selected repositories" only sees the ones explicitly granted, and any other
+# repository answers 404 on the installation lookup even though the App itself
+# authenticates fine.
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Universe
+metadata:
+  name: cinng
+  labels:
+    app.kubernetes.io/name: stellarcd
+spec:
+  displayName: Cinng
+  description: Tenant owning the Cinng infrastructure-as-code estate.
+  # Isolation namespace is "stellar-" + metadata.name, so "stellar-cinng".
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Galaxy
+metadata:
+  name: cinng-iac
+  namespace: stellar-cinng
+spec:
+  universeRef: cinng
+  displayName: Cinng IaC
+  description: Astrals backed by the 4sh/cinng-iac repository.
+  defaultVCSProvider: GitHub
+  defaultVCSURL: https://github.com
+  # Set once here, inherited by every Astral in this Galaxy.
+  vcsSecretRef:
+    name: github-4sh
+  terrarium:
+    # The repository is driven by Terragrunt: 616 terragrunt.hcl units against
+    # 122 raw .tf files, and there is no root module at the repository root.
+    engine: Terragrunt
+  approvalPolicy: RequiresReview
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Astral
+metadata:
+  name: test-accesshub-k8s-namespace
+  namespace: stellar-cinng
+spec:
+  universeRef: cinng
+  galaxyRef: cinng-iac
+  displayName: test / ACCESSHUB / k8s-namespace
+  description: Terragrunt unit provisioning the ACCESSHUB namespace in the test environment.
+  vcsRepository:
+    provider: GitHub
+    url: https://github.com/4sh/cinng-iac
+    branch: main
+    # One Astral is one root module, one workspace, one state, so path points at
+    # a single Terragrunt unit rather than at the repository root. The repository
+    # holds 616 of them under terragrunt/environments/<env>/..., which means 616
+    # candidate Astrals; declare the ones stellarCD should own.
+    #
+    #   terragrunt/environments/admin      27 units
+    #   terragrunt/environments/common     37 units
+    #   terragrunt/environments/preprod   164 units
+    #   terragrunt/environments/prod      140 units
+    #   terragrunt/environments/qa        117 units
+    #   terragrunt/environments/test      130 units
+    #   terragrunt/common/gcp-artifact-registry
+    #
+    # This one is deliberately in test: it is the cheapest place to find out
+    # whether the credentials, the backend and the engine version all line up.
+    path: terragrunt/environments/test/apps/ACCESSHUB/k8s-namespace
+  workspaceName: default
+  enableLocking: true
+  # planOnPR and applyOnMerge are recorded on the spec but no code reads them:
+  # there is no VCS webhook receiver yet, only the kubebuilder admission webhook
+  # server. They describe intent, they do not currently trigger anything.
+  planOnPR: true
+  applyOnMerge: false
+  autoApply: false

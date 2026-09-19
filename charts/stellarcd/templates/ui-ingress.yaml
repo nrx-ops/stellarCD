@@ -1,0 +1,41 @@
+{{- if and .Values.ui.enabled .Values.ui.ingress.enabled }}
+{{/*
+The admin API behind this dashboard is unauthenticated and read-only. Put an
+authenticating proxy (oauth2-proxy, your ingress controller's auth-url) in front
+of it before exposing it outside the cluster.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.ui.labels" . | nindent 4 }}
+  {{- with (mergeOverwrite (dict) .Values.commonAnnotations .Values.ui.ingress.annotations) }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ui.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ui.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ui.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "stellarcd.fullname" $ }}-frontend
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}

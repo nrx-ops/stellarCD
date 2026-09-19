@@ -206,12 +206,70 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The signal handler may only be installed once, and the field indexes are
+	// registered against the same context the manager later runs under.
+	ctx := ctrl.SetupSignalHandler()
+
+	// Indexes are registered before any controller is built: registering the
+	// same key twice on a manager is an error, and the reconcilers below list
+	// their children through these field selectors.
+	if err := controller.SetupIndexes(ctx, mgr); err != nil {
+		setupLog.Error(err, "Failed to register field indexes")
+		os.Exit(1)
+	}
+
 	if err := (&controller.StellarAppReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("stellarapp-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "StellarApp")
+		os.Exit(1)
+	}
+
+	if err := (&controller.UniverseReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("universe-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Universe")
+		os.Exit(1)
+	}
+
+	if err := (&controller.GalaxyReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("galaxy-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Galaxy")
+		os.Exit(1)
+	}
+
+	if err := (&controller.AstralReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("astral-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Astral")
+		os.Exit(1)
+	}
+
+	// The run registry is built here rather than left to the Flare controller's
+	// own defaulting so it can be registered as a Runnable: that is what makes
+	// SIGTERM abort live engine processes and wait for them to exit, instead of
+	// the manager returning while terraform is still writing state.
+	runs := controller.NewRunRegistry()
+	if err := mgr.Add(runs); err != nil {
+		setupLog.Error(err, "Failed to register the engine run registry")
+		os.Exit(1)
+	}
+	if err := (&controller.FlareReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("flare-controller"),
+		Runs:     runs,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Flare")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
@@ -242,7 +300,7 @@ func main() {
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}

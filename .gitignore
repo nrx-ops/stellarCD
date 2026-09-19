@@ -31,3 +31,4 @@ go.work
 
 # Architecture Decision Records (keep local drafts out of git)
 /adr
+/donotcommit/

@@ -1,0 +1,403 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: astrals.core.stellarcd.io
+spec:
+  group: core.stellarcd.io
+  names:
+    kind: Astral
+    listKind: AstralList
+    plural: astrals
+    shortNames:
+    - ast
+    - astrals
+    singular: astral
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.galaxyRef
+      name: Galaxy
+      type: string
+    - jsonPath: .spec.vcsRepository.url
+      name: Repository
+      type: string
+    - jsonPath: .spec.vcsRepository.path
+      name: Path
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.drift.detected
+      name: Drift
+      type: boolean
+    - jsonPath: .status.lastSuccessfulFlare
+      name: Last Flare
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Astral is the Schema for the astrals API: one root module, one state, one
+          plane of infrastructure that Flares illuminate.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AstralSpec defines the desired state of an Astral.
+
+              An Astral is one Terraform/OpenTofu/Terragrunt root module: one directory,
+              one workspace, one state. Every run against it is a Flare.
+            properties:
+              applyOnMerge:
+                default: false
+                description: ApplyOnMerge raises an Apply Flare when the tracked branch
+                  moves.
+                type: boolean
+              autoApply:
+                default: false
+                description: AutoApply lets a successful Plan chain straight into
+                  an Apply.
+                type: boolean
+              customHooks:
+                description: CustomHooks are shell commands run around the engine
+                  invocation.
+                properties:
+                  postApply:
+                    description: PostApply runs after a successful "apply".
+                    items:
+                      type: string
+                    type: array
+                  postPlan:
+                    description: PostPlan runs after a successful "plan".
+                    items:
+                      type: string
+                    type: array
+                  preApply:
+                    description: PreApply runs before "apply".
+                    items:
+                      type: string
+                    type: array
+                  prePlan:
+                    description: PrePlan runs before "plan".
+                    items:
+                      type: string
+                    type: array
+                type: object
+              dependsOn:
+                description: |-
+                  DependsOn lists Astral names in the same namespace that must be Ready
+                  before this one may run. Cycles are rejected by the validating webhook.
+                items:
+                  type: string
+                type: array
+              description:
+                description: Description explains what this project provisions.
+                maxLength: 1024
+                type: string
+              displayName:
+                description: DisplayName is the human-readable project name shown
+                  in the dashboard.
+                maxLength: 128
+                type: string
+              driftDetection:
+                description: DriftDetection configures the periodic Refresh Flares.
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled turns periodic drift detection on.
+                    type: boolean
+                  interval:
+                    default: 1h
+                    description: Interval is the delay between two drift checks.
+                    type: string
+                type: object
+              enableLocking:
+                default: true
+                description: |-
+                  EnableLocking serialises runs against this Astral's state. Turning it off
+                  risks state corruption and is only safe for read-only modules.
+                type: boolean
+              galaxyRef:
+                description: |-
+                  GalaxyRef is the name of the owning Galaxy, resolved in the same
+                  namespace as this Astral. Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+              planOnPR:
+                default: true
+                description: PlanOnPR raises a Plan Flare when a pull request touches
+                  spec.vcsRepository.path.
+                type: boolean
+              secrets:
+                description: Secrets project Kubernetes Secrets into the executor
+                  environment.
+                items:
+                  description: |-
+                    EnvSecretRef projects a Secret into the executor environment. It is the only
+                    supported way to pass sensitive Terraform inputs: values never transit
+                    through the spec, the status or the logs.
+                  properties:
+                    envPrefix:
+                      default: TF_VAR_
+                      description: |-
+                        EnvPrefix is prepended to each projected key to build the environment
+                        variable name. Terraform reads inputs from TF_VAR_<name>.
+                      type: string
+                    key:
+                      description: |-
+                        Key selects a single entry from the Secret. When empty every key in the
+                        Secret is projected.
+                      type: string
+                    name:
+                      description: Name is the Secret name, resolved in the object's
+                        own namespace.
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              terraformVersion:
+                description: |-
+                  TerraformVersion overrides the Galaxy engine version for this project.
+                  The engine itself is fixed by the Galaxy.
+                pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
+                type: string
+              universeRef:
+                description: UniverseRef is the name of the owning Universe. Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+              variables:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Variables are non-sensitive inputs passed as TF_VAR_<name>. Anything
+                  secret belongs in spec.secrets instead.
+                type: object
+              vcsRepository:
+                description: VCSRepository locates the root module.
+                properties:
+                  branch:
+                    default: main
+                    description: Branch is the tracked branch.
+                    minLength: 1
+                    type: string
+                  path:
+                    default: .
+                    description: |-
+                      Path is the directory inside the repository holding the root module.
+                      Relative to the repository root; "." means the root itself.
+                    type: string
+                  provider:
+                    default: GitHub
+                    description: Provider identifies the hosting platform.
+                    enum:
+                    - GitHub
+                    - GitLab
+                    - Gitea
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretRef references the Secret holding the clone credentials. When unset
+                      the Galaxy-level credentials are used.
+                    properties:
+                      name:
+                        description: Name is the name of the referenced Secret.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: URL is the clone URL, HTTPS or SSH.
+                    minLength: 1
+                    type: string
+                required:
+                - url
+                type: object
+              workspaceName:
+                default: default
+                description: WorkspaceName is the engine workspace selected before
+                  every run.
+                minLength: 1
+                type: string
+            required:
+            - galaxyRef
+            - universeRef
+            - vcsRepository
+            type: object
+          status:
+            description: AstralStatus reports the observed state of an Astral.
+            properties:
+              conditions:
+                description: Conditions holds the machine-readable state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              drift:
+                description: Drift records the outcome of the last drift check.
+                properties:
+                  detected:
+                    description: Detected is true while real infrastructure diverges
+                      from the tracked revision.
+                    type: boolean
+                  lastChecked:
+                    description: LastChecked is when the last drift check ran, drifted
+                      or not.
+                    format: date-time
+                    type: string
+                  lastDetected:
+                    description: LastDetected is when drift was last observed.
+                    format: date-time
+                    type: string
+                type: object
+              flareHistory:
+                description: FlareHistory keeps the most recent finished Flares, newest
+                  first.
+                items:
+                  description: FlareRef is one entry of the rolling Flare history
+                    kept on an Astral.
+                  properties:
+                    action:
+                      description: Action is the action that Flare performed.
+                      type: string
+                    completionTime:
+                      description: CompletionTime is when that Flare finished.
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the Flare object name.
+                      type: string
+                    phase:
+                      description: Phase is the terminal phase that Flare reached.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                maxItems: 10
+                type: array
+              infrastructure:
+                description: Infrastructure is the last known shape of the managed
+                  resources.
+                properties:
+                  currency:
+                    description: Currency is the ISO 4217 code for EstimatedMonthlyCost.
+                    pattern: ^$|^[A-Z]{3}$
+                    type: string
+                  estimatedMonthlyCost:
+                    description: |-
+                      EstimatedMonthlyCost is a decimal amount, e.g. "412.50". It is a string
+                      rather than a float because the Kubernetes API conventions rule out
+                      floating point fields: they round-trip badly across clients.
+                    pattern: ^$|^[0-9]+(\.[0-9]{1,2})?$
+                    type: string
+                  resourceCount:
+                    description: ResourceCount is the number of resources in the state
+                      file.
+                    format: int32
+                    type: integer
+                type: object
+              lastFlareStatus:
+                description: LastFlareStatus is the terminal phase of the most recent
+                  Flare.
+                enum:
+                - Succeeded
+                - Failed
+                - Cancelled
+                type: string
+              lastSuccessfulFlare:
+                description: LastSuccessfulFlare is the name of the last Flare that
+                  succeeded.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the spec generation last processed.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is a coarse summary of the project state.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

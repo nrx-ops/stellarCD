@@ -1,0 +1,29 @@
+apiVersion: v2
+name: stellarcd
+description: GitOps continuous delivery operator for Terraform and Terragrunt
+type: application
+
+# version  : the chart's own version, bumped on every chart change.
+# appVersion: the stellarCD release the default image tags point at.
+version: 0.1.0
+appVersion: "0.1.0"
+
+kubeVersion: ">=1.25.0-0"
+
+keywords:
+  - gitops
+  - terraform
+  - terragrunt
+  - continuous-delivery
+  - operator
+
+home: https://github.com/nrx-ops/stellarCD
+sources:
+  - https://github.com/nrx-ops/stellarCD
+
+maintainers:
+  - name: nrx-ops
+    url: https://github.com/nrx-ops
+
+annotations:
+  category: DeveloperTools

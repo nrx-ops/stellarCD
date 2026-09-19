@@ -1,0 +1,30 @@
+# Istio ingress Gateway for the stellarCD dashboard.
+#
+# The chart templates a VirtualService but deliberately not a Gateway: a Gateway
+# binds to a shared ingress deployment and is normally owned by whoever runs the
+# mesh, not by each application release. This manifest is the minimum needed to
+# make `ui.virtualService.enabled=true` reachable from outside the cluster, and
+# matches the chart's default `ui.virtualService.gateways` value.
+#
+# Terminating plain HTTP is fine for a local cluster only. In a shared cluster,
+# add a `port: 443` server with `tls.mode: SIMPLE` and a credentialName, and
+# redirect :80 with `tls.httpsRedirect: true` -- the dashboard's admin API is
+# unauthenticated, so it must not be published over cleartext.
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: stellarcd-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        # No namespace prefix means "*/stellearcd.local": any namespace may bind
+        # a VirtualService for this host. Narrow to "stellarcd-system/..." to
+        # restrict which namespace is allowed to claim it.
+        - stellearcd.local

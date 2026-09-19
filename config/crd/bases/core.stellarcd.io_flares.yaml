@@ -1,0 +1,303 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: flares.core.stellarcd.io
+spec:
+  group: core.stellarcd.io
+  names:
+    kind: Flare
+    listKind: FlareList
+    plural: flares
+    shortNames:
+    - fl
+    - flares
+    singular: flare
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.astralRef
+      name: Astral
+      type: string
+    - jsonPath: .spec.action
+      name: Action
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.duration
+      name: Duration
+      type: string
+    - jsonPath: .spec.requestedBy
+      name: Requested By
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Flare is the Schema for the flares API: a single burst of engine execution
+          against one Astral.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              FlareSpec defines the desired state of a Flare.
+
+              A Flare is a single, one-shot run. Everything except approved and cancel is
+              immutable after creation: re-running means creating a new Flare, which keeps
+              the history honest.
+            properties:
+              action:
+                description: Action is the engine operation to perform.
+                enum:
+                - Plan
+                - Apply
+                - Destroy
+                - Refresh
+                type: string
+              approved:
+                description: |-
+                  Approved is the reviewer's decision. It is the one field a reviewer may
+                  flip after creation; false explicitly rejects and cancels the run.
+                type: boolean
+              astralRef:
+                description: |-
+                  AstralRef is the name of the target Astral, resolved in the same
+                  namespace as this Flare. Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+              autoApprove:
+                default: false
+                description: |-
+                  AutoApprove skips the approval gate. The validating webhook rejects it
+                  when the Galaxy policy is Manual, so it cannot be used to bypass review.
+                type: boolean
+              cancel:
+                default: false
+                description: Cancel asks the controller to abort a running Flare.
+                  It is one-way.
+                type: boolean
+              galaxyRef:
+                description: GalaxyRef is the name of the owning Galaxy. Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+              parallelism:
+                default: 10
+                description: Parallelism is the engine -parallelism flag.
+                format: int32
+                maximum: 256
+                minimum: 1
+                type: integer
+              refreshBeforePlan:
+                default: true
+                description: |-
+                  RefreshBeforePlan runs a refresh before planning, at the cost of a full
+                  provider round trip.
+                type: boolean
+              requestedBy:
+                description: RequestedBy is the email of the human or system that
+                  raised this run.
+                pattern: ^$|^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$
+                type: string
+              tags:
+                additionalProperties:
+                  type: string
+                description: Tags are free-form labels carried through to notifications
+                  and metrics.
+                type: object
+              timeoutSeconds:
+                default: 3600
+                description: |-
+                  TimeoutSeconds bounds the run. The engine process is killed when it fires
+                  and the Flare moves to Cancelled.
+                format: int32
+                maximum: 86400
+                minimum: 60
+                type: integer
+              universeRef:
+                description: UniverseRef is the name of the owning Universe. Immutable.
+                maxLength: 253
+                minLength: 1
+                type: string
+              variables:
+                additionalProperties:
+                  type: string
+                description: Variables override the Astral variables for this run
+                  only.
+                type: object
+            required:
+            - action
+            - astralRef
+            - galaxyRef
+            - universeRef
+            type: object
+          status:
+            description: FlareStatus reports the observed state of a Flare.
+            properties:
+              action:
+                description: Action echoes the executed action so consumers need not
+                  read the spec.
+                enum:
+                - Plan
+                - Apply
+                - Destroy
+                - Refresh
+                type: string
+              applyOutput:
+                description: ApplyOutput is the truncated, human-readable apply summary.
+                type: string
+              artifacts:
+                description: Artifacts points at the Secrets holding the plan file
+                  and state snapshot.
+                properties:
+                  planFile:
+                    description: PlanFile names the Secret holding the binary plan
+                      produced by this run.
+                    type: string
+                  tfstate:
+                    description: TFState names the Secret holding the state snapshot
+                      taken after the run.
+                    type: string
+                type: object
+              completionTime:
+                description: CompletionTime is when the run reached a terminal phase.
+                format: date-time
+                type: string
+              conditions:
+                description: Conditions holds the machine-readable state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              duration:
+                description: Duration is CompletionTime minus StartTime, rendered
+                  for humans.
+                type: string
+              errors:
+                description: Errors holds the diagnostics that caused a failure.
+                items:
+                  type: string
+                type: array
+              observedGeneration:
+                description: ObservedGeneration is the spec generation last processed.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is a coarse summary of the run.
+                type: string
+              planOutput:
+                description: PlanOutput is the truncated, human-readable plan summary.
+                type: string
+              resources:
+                description: Resources is the delta reported by the engine.
+                properties:
+                  created:
+                    description: Created is the number of resources added.
+                    format: int32
+                    type: integer
+                  deleted:
+                    description: Deleted is the number of resources destroyed.
+                    format: int32
+                    type: integer
+                  unchanged:
+                    description: Unchanged is the number of resources left alone.
+                    format: int32
+                    type: integer
+                  updated:
+                    description: Updated is the number of resources changed in place.
+                    format: int32
+                    type: integer
+                type: object
+              startTime:
+                description: StartTime is when the engine process was launched.
+                format: date-time
+                type: string
+              warnings:
+                description: Warnings holds non-fatal diagnostics.
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

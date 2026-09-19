@@ -1,0 +1,47 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+Default-deny ingress to the manager, with holes punched for the two ports that
+are meant to be reachable. Egress is left open: the operator has to reach Git
+remotes, Terraform registries and cloud provider APIs.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  {{- with (include "stellarcd.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "stellarcd.controller.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if .Values.controller.metrics.enabled }}
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.metricsNamespaceSelector | nindent 12 }}
+      ports:
+        - port: {{ .Values.controller.metrics.port }}
+          protocol: TCP
+    {{- end }}
+    {{- if and .Values.controller.adminApi.enabled .Values.ui.enabled }}
+    {{- /* Only the dashboard pods may reach the admin API. */}}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "stellarcd.ui.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.controller.adminApi.port }}
+          protocol: TCP
+    {{- end }}
+    {{- /* Kubelet probes originate on the node, outside any pod selector. */}}
+    - ports:
+        - port: {{ .Values.controller.health.port }}
+          protocol: TCP
+{{- end }}

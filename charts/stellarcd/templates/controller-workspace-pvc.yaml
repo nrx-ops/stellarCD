@@ -1,0 +1,29 @@
+{{- if and (eq .Values.controller.workspace.type "persistentVolumeClaim") (not .Values.controller.workspace.persistentVolumeClaim.existingClaim) }}
+{{/*
+Terraform runs are serialised per state, but a ReadWriteOnce claim also pins
+every replica to one node. Use ReadWriteMany, or keep replicaCount at 1, if the
+scheduler needs freedom to move the manager.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "stellarcd.fullname" . }}-workspace
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "stellarcd.controller.labels" . | nindent 4 }}
+  annotations:
+    {{- /* Checkouts and plugin caches outlive the release; deleting them is opt-in. */}}
+    helm.sh/resource-policy: keep
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.controller.workspace.persistentVolumeClaim.accessModes | nindent 4 }}
+  {{- with .Values.controller.workspace.persistentVolumeClaim.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.controller.workspace.persistentVolumeClaim.size }}
+{{- end }}
