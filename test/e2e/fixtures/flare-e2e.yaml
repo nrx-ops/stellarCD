@@ -1,0 +1,104 @@
+# End-to-end fixture for Flares executed in Jobs: a git daemon to push the
+# module to, and a Postgres database holding Terraform state across Jobs.
+#
+#   docker build -f test/e2e/fixtures/gitd.Dockerfile -t stellarcd-e2e-gitd:latest .
+#   minikube image load stellarcd-e2e-gitd:latest
+#   kubectl --context minikube apply -f test/e2e/fixtures/flare-e2e.yaml
+#
+# The Universe creates namespace stellar-e2e; the rest lands in it.
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Universe
+metadata:
+  name: e2e
+spec:
+  displayName: End-to-end fixture
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git
+  namespace: stellar-e2e
+spec:
+  selector: { matchLabels: { app: git } }
+  template:
+    metadata: { labels: { app: git } }
+    spec:
+      containers:
+        - name: gitd
+          image: stellarcd-e2e-gitd:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 9418 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git
+  namespace: stellar-e2e
+spec:
+  selector: { app: git }
+  ports: [{ port: 9418, targetPort: 9418 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pg
+  namespace: stellar-e2e
+spec:
+  selector: { matchLabels: { app: pg } }
+  template:
+    metadata: { labels: { app: pg } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_USER, value: tf }
+            - { name: POSTGRES_PASSWORD, value: tf-e2e-password }
+            - { name: POSTGRES_DB, value: tf }
+          ports: [{ containerPort: 5432 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg
+  namespace: stellar-e2e
+spec:
+  selector: { app: pg }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+# The pg backend reads PG_CONN_STR verbatim, which is why the Astral projects
+# this Secret with envPrefix "".
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg
+  namespace: stellar-e2e
+stringData:
+  PG_CONN_STR: postgres://tf:tf-e2e-password@pg.stellar-e2e.svc:5432/tf?sslmode=disable
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Galaxy
+metadata:
+  name: e2e
+  namespace: stellar-e2e
+spec:
+  universeRef: e2e
+  approvalPolicy: Auto
+---
+apiVersion: core.stellarcd.io/v1alpha1
+kind: Astral
+metadata:
+  name: fixture
+  namespace: stellar-e2e
+spec:
+  universeRef: e2e
+  galaxyRef: e2e
+  engine: Terraform
+  vcsRepository:
+    url: git://git.stellar-e2e.svc/repo.git
+    branch: main
+    path: infra
+  secrets:
+    - name: pg
+      envPrefix: ""
