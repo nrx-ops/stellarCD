@@ -137,8 +137,8 @@ func (r *StellarAppReconciler) markDegraded(
 ) (ctrl.Result, error) {
 	app.Status.Phase = corev1alpha1.PhaseDegraded
 	app.Status.LastError = cause.Error()
-	setCondition(app, corev1alpha1.ConditionReady, metav1.ConditionFalse, reason, cause.Error())
-	setCondition(app, corev1alpha1.ConditionSynced, metav1.ConditionFalse, reason, cause.Error())
+	setConditionFalse(app, corev1alpha1.ConditionReady, reason, cause.Error())
+	setConditionFalse(app, corev1alpha1.ConditionSynced, reason, cause.Error())
 
 	if err := r.updateStatus(ctx, app); err != nil {
 		return ctrl.Result{}, err
@@ -157,8 +157,8 @@ func (r *StellarAppReconciler) markPending(
 
 	app.Status.Phase = corev1alpha1.PhaseSyncing
 	app.Status.LastError = ""
-	setCondition(app, corev1alpha1.ConditionSynced, metav1.ConditionFalse, reasonSpecValid, msg)
-	setCondition(app, corev1alpha1.ConditionReady, metav1.ConditionFalse, reasonExecutorPending, msg)
+	setConditionFalse(app, corev1alpha1.ConditionSynced, reasonSpecValid, msg)
+	setConditionFalse(app, corev1alpha1.ConditionReady, reasonExecutorPending, msg)
 
 	if err := r.updateStatus(ctx, app); err != nil {
 		return ctrl.Result{}, err
@@ -176,9 +176,10 @@ func (r *StellarAppReconciler) updateStatus(ctx context.Context, app *corev1alph
 	return nil
 }
 
-// setCondition upserts a condition, preserving LastTransitionTime when the
-// status has not actually changed.
-func setCondition(app *corev1alpha1.StellarApp, condType string, status metav1.ConditionStatus, reason, msg string) {
+// setConditionFalse marks a condition False, preserving LastTransitionTime when
+// the status has not actually changed.
+func setConditionFalse(app *corev1alpha1.StellarApp, condType string, reason, msg string) {
+	const status = metav1.ConditionFalse
 	for i := range app.Status.Conditions {
 		existing := &app.Status.Conditions[i]
 		if existing.Type != condType {

@@ -17,9 +17,10 @@ limitations under the License.
 package adminapi
 
 import (
+	"cmp"
 	"context"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -42,6 +43,13 @@ const (
 	// bound, so some parallelism matters, but an operator with a hundred
 	// Astrals must not open a hundred sockets at once.
 	maxConcurrentProbes = 8
+)
+
+// Kinds a repository, or the Secret it uses, can come from.
+const (
+	kindAstral     = "Astral"
+	kindGalaxy     = "Galaxy"
+	kindStellarApp = "StellarApp"
 )
 
 // RepositoryInfo is one repository stellarCD is configured to track, together
@@ -151,11 +159,8 @@ func (s *Server) handleListRepositories(w http.ResponseWriter, r *http.Request) 
 		s.probeAll(r.Context(), sources, out)
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
-		}
-		return out[i].Name < out[j].Name
+	slices.SortFunc(out, func(a, b RepositoryInfo) int {
+		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
 	})
 	s.writeJSON(w, r, out)
 }
@@ -254,14 +259,14 @@ func (s *Server) collectRepositories(ctx context.Context, opts []client.ListOpti
 
 		secretName, scope := "", ""
 		if repo.SecretRef != nil {
-			secretName, scope = repo.SecretRef.Name, "Astral"
+			secretName, scope = repo.SecretRef.Name, kindAstral
 		} else if inherited, ok := galaxySecret[a.Namespace+"/"+a.Spec.GalaxyRef]; ok {
-			secretName, scope = inherited, "Galaxy"
+			secretName, scope = inherited, kindGalaxy
 		}
 
 		sources = append(sources, repoSource{
 			info: RepositoryInfo{
-				Kind:        "Astral",
+				Kind:        kindAstral,
 				Namespace:   a.Namespace,
 				Name:        a.Name,
 				DisplayName: a.Spec.DisplayName,
@@ -293,11 +298,11 @@ func (s *Server) collectRepositories(ctx context.Context, opts []client.ListOpti
 		}
 		scope := ""
 		if secretName != "" {
-			scope = "StellarApp"
+			scope = kindStellarApp
 		}
 		sources = append(sources, repoSource{
 			info: RepositoryInfo{
-				Kind:        "StellarApp",
+				Kind:        kindStellarApp,
 				Namespace:   app.Namespace,
 				Name:        app.Name,
 				URL:         app.Spec.GitRepository.URL,

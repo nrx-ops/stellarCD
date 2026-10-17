@@ -186,14 +186,14 @@ func CheckRepository(ctx context.Context, cloneURL string, creds map[string][]by
 		_ = resp.Body.Close()
 	}()
 
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		status.State = RepositoryConnected
 		status.Message = "the remote accepted the credentials and advertised its refs"
-	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		status.State = RepositoryUnauthorized
 		status.Message = fmt.Sprintf("the remote rejected the credentials (%s)", resp.Status)
-	case resp.StatusCode == http.StatusNotFound:
+	case http.StatusNotFound:
 		status.State = RepositoryNotFound
 		status.Message = "the remote reports no such repository, or the credentials cannot see it"
 	default:

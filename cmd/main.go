@@ -34,6 +34,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -228,7 +229,7 @@ func main() {
 	if err := (&controller.StellarAppReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("stellarapp-controller"),
+		Recorder: eventRecorder(mgr, "stellarapp-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "StellarApp")
 		os.Exit(1)
@@ -237,7 +238,7 @@ func main() {
 	if err := (&controller.UniverseReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("universe-controller"),
+		Recorder: eventRecorder(mgr, "universe-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Universe")
 		os.Exit(1)
@@ -246,7 +247,7 @@ func main() {
 	if err := (&controller.GalaxyReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("galaxy-controller"),
+		Recorder: eventRecorder(mgr, "galaxy-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Galaxy")
 		os.Exit(1)
@@ -255,7 +256,7 @@ func main() {
 	if err := (&controller.AstralReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("astral-controller"),
+		Recorder: eventRecorder(mgr, "astral-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Astral")
 		os.Exit(1)
@@ -275,7 +276,7 @@ func main() {
 	if err := (&controller.FlareReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
-		Recorder:  mgr.GetEventRecorderFor("flare-controller"),
+		Recorder:  eventRecorder(mgr, "flare-controller"),
 		APIReader: mgr.GetAPIReader(),
 		Logs:      &controller.ClientsetLogReader{Clientset: clientset},
 		Runner: controller.RunnerConfig{
@@ -318,4 +319,13 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// eventRecorder returns a core/v1 Event recorder.
+//
+// TODO: move to mgr.GetEventRecorder (events.k8s.io/v1). It needs RBAC on the
+// events.k8s.io group in config/rbac and in the chart, and an action argument
+// on every event the reconcilers emit.
+func eventRecorder(mgr ctrl.Manager, name string) record.EventRecorder {
+	return mgr.GetEventRecorderFor(name) //nolint:staticcheck // see the TODO above
 }

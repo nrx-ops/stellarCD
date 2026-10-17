@@ -53,6 +53,9 @@ const (
 	// access tokens over HTTPS. The token goes in the password field.
 	githubAppUsername = "x-access-token"
 
+	// githubAPIBase serves the REST API of repositories hosted on github.com.
+	githubAPIBase = "https://api.github.com"
+
 	// appJWTLifetime is how long the App-level assertion stays valid. GitHub
 	// rejects anything over ten minutes; nine leaves room for clock skew.
 	appJWTLifetime = 9 * time.Minute
@@ -198,7 +201,7 @@ func parseGitHubRepoURL(cloneURL string) (githubRepo, error) {
 		apiBase: parsed.Scheme + "://" + parsed.Host + "/api/v3",
 	}
 	if host := strings.ToLower(parsed.Hostname()); host == "github.com" || host == "www.github.com" {
-		target.apiBase = "https://api.github.com"
+		target.apiBase = githubAPIBase
 	}
 	return target, nil
 }

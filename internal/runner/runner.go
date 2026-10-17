@@ -285,7 +285,7 @@ func (r *Runner) init(ctx context.Context, dir string, lay layout) error {
 		// TF_CLI_ARGS_init (see childEnv).
 		return nil
 	}
-	args := []string{"init", "-input=false", "-no-color"}
+	args := engineArgs("init")
 	if r.Request.BackendConfig {
 		args = append(args, "-backend-config="+runspec.BackendConfigFile)
 	}
@@ -300,16 +300,21 @@ func (r *Runner) init(ctx context.Context, dir string, lay layout) error {
 	return nil
 }
 
+// engineArgs builds a non-interactive engine command line: no prompt, and no
+// colour codes in the log the controller parses.
+func engineArgs(command string, extra ...string) []string {
+	return append([]string{command, "-input=false", "-no-color"}, extra...)
+}
+
 // plan runs the plan and reads it back as JSON. In RunAll mode Terragrunt
 // writes one saved plan and one JSON plan per unit, plus a run report that says
 // which units failed and which were skipped because a dependency failed.
 func (r *Runner) plan(ctx context.Context, dir string, lay layout) (*PlanReport, []corev1alpha1.FlareUnitResult, error) {
 	req := r.Request
-	args := []string{
-		"plan", "-input=false", "-no-color",
+	args := engineArgs("plan",
 		fmt.Sprintf("-lock=%t", req.Lock),
 		fmt.Sprintf("-parallelism=%d", parallelism(req)),
-	}
+	)
 	refreshOnly := req.Action == corev1alpha1.FlareActionRefresh
 	switch {
 	case refreshOnly:
@@ -386,11 +391,10 @@ func (r *Runner) plan(ctx context.Context, dir string, lay layout) (*PlanReport,
 // the destroy protection: nothing is re-planned in between.
 func (r *Runner) apply(ctx context.Context, dir string, lay layout) ([]corev1alpha1.FlareUnitResult, error) {
 	req := r.Request
-	args := []string{
-		"apply", "-input=false", "-no-color",
+	args := engineArgs("apply",
 		fmt.Sprintf("-lock=%t", req.Lock),
 		fmt.Sprintf("-parallelism=%d", parallelism(req)),
-	}
+	)
 	if !lay.runAll {
 		return nil, r.exec(ctx, dir, lay, append(args, r.planFile()))
 	}
@@ -411,7 +415,7 @@ func (r *Runner) apply(ctx context.Context, dir string, lay layout) ([]corev1alp
 func (r *Runner) hooks(ctx context.Context, dir string, hooks []string) error {
 	for _, hook := range hooks {
 		out, _, err := r.exec0(ctx, dir, "/bin/sh", "-c", hook)
-		r.output.Write([]byte(out))
+		_, _ = r.output.Write([]byte(out))
 		if err != nil {
 			return fmt.Errorf("hook %q failed: %w", hook, err)
 		}

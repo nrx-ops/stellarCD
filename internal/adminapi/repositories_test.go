@@ -29,9 +29,17 @@ import (
 	"github.com/nrx-ops/stellarCD/internal/controller/shared"
 )
 
-func galaxy(namespace, name, secret string) *corev1alpha1.Galaxy {
+// Every fixture of these tests lives in the same namespace and Galaxy, and
+// tracks the same branch.
+const (
+	tenant     = "tenant"
+	testGalaxy = "gal"
+	testBranch = "main"
+)
+
+func galaxy(secret string) *corev1alpha1.Galaxy {
 	g := &corev1alpha1.Galaxy{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: testGalaxy},
 		Spec:       corev1alpha1.GalaxySpec{UniverseRef: "u"},
 	}
 	if secret != "" {
@@ -40,16 +48,16 @@ func galaxy(namespace, name, secret string) *corev1alpha1.Galaxy {
 	return g
 }
 
-func astral(namespace, name, galaxyRef, url, secret string) *corev1alpha1.Astral {
+func astral(name, url, secret string) *corev1alpha1.Astral {
 	a := &corev1alpha1.Astral{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: name},
 		Spec: corev1alpha1.AstralSpec{
 			UniverseRef: "u",
-			GalaxyRef:   galaxyRef,
+			GalaxyRef:   testGalaxy,
 			VCSRepository: corev1alpha1.VCSRepository{
 				Provider: corev1alpha1.VCSProviderGitHub,
 				URL:      url,
-				Branch:   "main",
+				Branch:   testBranch,
 				Path:     ".",
 			},
 		},
@@ -60,9 +68,9 @@ func astral(namespace, name, galaxyRef, url, secret string) *corev1alpha1.Astral
 	return a
 }
 
-func secret(namespace, name string, data map[string][]byte) *corev1.Secret {
+func secret(name string, data map[string][]byte) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, ResourceVersion: "1"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: tenant, Name: name, ResourceVersion: "1"},
 		Data:       data,
 	}
 }
@@ -71,11 +79,11 @@ func secret(namespace, name string, data map[string][]byte) *corev1.Secret {
 // came from, and which Secret it ends up using.
 func TestListRepositoriesInventory(t *testing.T) {
 	s := newServer(t,
-		galaxy("tenant", "gal", "galaxy-creds"),
-		astral("tenant", "inherits", "gal", "https://example.invalid/a.git", ""),
-		astral("tenant", "overrides", "gal", "https://example.invalid/b.git", "own-creds"),
-		secret("tenant", "galaxy-creds", map[string][]byte{shared.SecretKeyToken: []byte("t")}),
-		secret("tenant", "own-creds", map[string][]byte{shared.SecretKeyToken: []byte("t")}),
+		galaxy("galaxy-creds"),
+		astral("inherits", "https://example.invalid/a.git", ""),
+		astral("overrides", "https://example.invalid/b.git", "own-creds"),
+		secret("galaxy-creds", map[string][]byte{shared.SecretKeyToken: []byte("t")}),
+		secret("own-creds", map[string][]byte{shared.SecretKeyToken: []byte("t")}),
 	)
 
 	rec := do(t, s, "/api/v1/repositories?check=false")
@@ -100,7 +108,7 @@ func TestListRepositoriesInventory(t *testing.T) {
 		t.Fatalf("got secret %q scope %q, want the Astral's own credentials",
 			got.SecretName, got.SecretScope)
 	}
-	if got := byName["inherits"]; got.Kind != "Astral" || got.Galaxy != "gal" || got.Branch != "main" {
+	if got := byName["inherits"]; got.Kind != kindAstral || got.Galaxy != testGalaxy || got.Branch != testBranch {
 		t.Fatalf("got %+v, want the Astral coordinates carried through", got)
 	}
 }
@@ -111,9 +119,9 @@ func TestListRepositoriesInventory(t *testing.T) {
 func TestListRepositoriesNeverLeaksCredentials(t *testing.T) {
 	const password = "sup3rs3cr3t-should-never-be-serialised"
 	s := newServer(t,
-		galaxy("tenant", "gal", "creds"),
-		astral("tenant", "app", "gal", "https://example.invalid/a.git", ""),
-		secret("tenant", "creds", map[string][]byte{
+		galaxy("creds"),
+		astral("app", "https://example.invalid/a.git", ""),
+		secret("creds", map[string][]byte{
 			shared.SecretKeyUsername: []byte("alice"),
 			shared.SecretKeyPassword: []byte(password),
 		}),
@@ -142,8 +150,8 @@ func TestListRepositoriesNeverLeaksCredentials(t *testing.T) {
 // "the credentials were rejected"; they need different fixes.
 func TestListRepositoriesMissingSecret(t *testing.T) {
 	s := newServer(t,
-		galaxy("tenant", "gal", "absent"),
-		astral("tenant", "app", "gal", "https://example.invalid/a.git", ""),
+		galaxy("absent"),
+		astral("app", "https://example.invalid/a.git", ""),
 	)
 
 	repos := decode[[]RepositoryInfo](t, do(t, s, "/api/v1/repositories"))
@@ -174,9 +182,9 @@ func TestListRepositoriesConnects(t *testing.T) {
 	defer remote.Close()
 
 	s := newServer(t,
-		galaxy("tenant", "gal", "creds"),
-		astral("tenant", "app", "gal", remote.URL+"/repo.git", ""),
-		secret("tenant", "creds", map[string][]byte{shared.SecretKeyToken: []byte("ghp_x")}),
+		galaxy("creds"),
+		astral("app", remote.URL+"/repo.git", ""),
+		secret("creds", map[string][]byte{shared.SecretKeyToken: []byte("ghp_x")}),
 	)
 
 	repos := decode[[]RepositoryInfo](t, do(t, s, "/api/v1/repositories"))
@@ -198,9 +206,9 @@ func TestListRepositoriesUnauthorized(t *testing.T) {
 	defer remote.Close()
 
 	s := newServer(t,
-		galaxy("tenant", "gal", "creds"),
-		astral("tenant", "app", "gal", remote.URL+"/repo.git", ""),
-		secret("tenant", "creds", map[string][]byte{shared.SecretKeyToken: []byte("stale")}),
+		galaxy("creds"),
+		astral("app", remote.URL+"/repo.git", ""),
+		secret("creds", map[string][]byte{shared.SecretKeyToken: []byte("stale")}),
 	)
 
 	repos := decode[[]RepositoryInfo](t, do(t, s, "/api/v1/repositories"))
@@ -220,12 +228,12 @@ func TestRepositoryProbeIsCached(t *testing.T) {
 	defer remote.Close()
 
 	s := newServer(t,
-		galaxy("tenant", "gal", "creds"),
-		astral("tenant", "app", "gal", remote.URL+"/repo.git", ""),
-		secret("tenant", "creds", map[string][]byte{shared.SecretKeyToken: []byte("t")}),
+		galaxy("creds"),
+		astral("app", remote.URL+"/repo.git", ""),
+		secret("creds", map[string][]byte{shared.SecretKeyToken: []byte("t")}),
 	)
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		do(t, s, "/api/v1/repositories")
 	}
 	if hits != 1 {
@@ -237,9 +245,9 @@ func TestRepositoryProbeIsCached(t *testing.T) {
 // unsupported rather than silently shown as broken.
 func TestRepositorySSHIsNotChecked(t *testing.T) {
 	s := newServer(t,
-		galaxy("tenant", "gal", "creds"),
-		astral("tenant", "app", "gal", "ssh://git@example.invalid/a.git", ""),
-		secret("tenant", "creds", map[string][]byte{
+		galaxy("creds"),
+		astral("app", "ssh://git@example.invalid/a.git", ""),
+		secret("creds", map[string][]byte{
 			shared.SecretKeySSHPrivateKey: []byte("-----BEGIN OPENSSH PRIVATE KEY-----"),
 		}),
 	)

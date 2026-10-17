@@ -61,11 +61,12 @@ func version(name string, served, storage bool) apiextensionsv1.CustomResourceDe
 	return apiextensionsv1.CustomResourceDefinitionVersion{Name: name, Served: served, Storage: storage}
 }
 
-func stellarApp(namespace, name string) *corev1alpha1.StellarApp {
+func stellarApp(namespace string) *corev1alpha1.StellarApp {
+	const name = "api"
 	return &corev1alpha1.StellarApp{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 		Spec: corev1alpha1.StellarAppSpec{
-			GitRepository: corev1alpha1.GitRepositorySpec{URL: "https://example.com/repo.git", Ref: "main"},
+			GitRepository: corev1alpha1.GitRepositorySpec{URL: "https://example.com/repo.git", Ref: testBranch},
 			TerraformPath: "live/" + name,
 		},
 	}
@@ -75,7 +76,7 @@ func event(namespace, name, reason string, at time.Time) *corev1.Event {
 	return &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name + "-" + reason},
 		InvolvedObject: corev1.ObjectReference{
-			Kind:      "StellarApp",
+			Kind:      kindStellarApp,
 			Namespace: namespace,
 			Name:      name,
 		},
@@ -135,7 +136,7 @@ func TestHandleListCRDs(t *testing.T) {
 
 	s := newServer(t,
 		crd("stellarapps."+group, group, "StellarApp", "stellarapps",
-			version("v1alpha1", true, true),
+			version(corev1alpha1.GroupVersion.Version, true, true),
 			version("v1alpha2", false, false), // not served: must be hidden
 		),
 		crd("widgets.example.com", "example.com", "Widget", "widgets", version("v1", true, true)),
@@ -154,11 +155,11 @@ func TestHandleListCRDs(t *testing.T) {
 	want := CRDInfo{
 		Name:          "stellarapps." + group,
 		Group:         group,
-		Kind:          "StellarApp",
+		Kind:          kindStellarApp,
 		Plural:        "stellarapps",
 		Scope:         "Namespaced",
-		Versions:      []string{"v1alpha1"},
-		StoredVersion: "v1alpha1",
+		Versions:      []string{corev1alpha1.GroupVersion.Version},
+		StoredVersion: corev1alpha1.GroupVersion.Version,
 	}
 	if got[0].Name != want.Name || got[0].Kind != want.Kind || got[0].Plural != want.Plural {
 		t.Errorf("identity = %+v, want %+v", got[0], want)
@@ -166,7 +167,7 @@ func TestHandleListCRDs(t *testing.T) {
 	if got[0].StoredVersion != want.StoredVersion {
 		t.Errorf("storedVersion = %q, want %q", got[0].StoredVersion, want.StoredVersion)
 	}
-	if len(got[0].Versions) != 1 || got[0].Versions[0] != "v1alpha1" {
+	if len(got[0].Versions) != 1 || got[0].Versions[0] != corev1alpha1.GroupVersion.Version {
 		t.Errorf("versions = %v, want [v1alpha1] (unserved versions must be omitted)", got[0].Versions)
 	}
 }
@@ -189,7 +190,7 @@ func TestHandleListNamespaces(t *testing.T) {
 }
 
 func TestHandleListStellarApps(t *testing.T) {
-	s := newServer(t, stellarApp("dev", "api"), stellarApp("prod", "api"))
+	s := newServer(t, stellarApp("dev"), stellarApp("prod"))
 
 	tests := []struct {
 		name  string
@@ -216,7 +217,7 @@ func TestHandleListStellarApps(t *testing.T) {
 }
 
 func TestHandleGetStellarApp(t *testing.T) {
-	s := newServer(t, stellarApp("dev", "api"))
+	s := newServer(t, stellarApp("dev"))
 
 	t.Run("existing app", func(t *testing.T) {
 		rec := do(t, s, "/api/v1/stellarapps/dev/api")
@@ -240,7 +241,7 @@ func TestHandleGetStellarApp(t *testing.T) {
 func TestHandleListEvents(t *testing.T) {
 	base := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	s := newServer(t,
-		stellarApp("dev", "api"),
+		stellarApp("dev"),
 		event("dev", "api", "Older", base),
 		event("dev", "api", "Newer", base.Add(time.Minute)),
 		event("dev", "other", "Unrelated", base), // different involvedObject.name

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // FlareFinalizer keeps a Flare around until its executor process has been
@@ -448,5 +449,8 @@ type FlareList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&Flare{}, &FlareList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(SchemeGroupVersion, &Flare{}, &FlareList{})
+		return nil
+	})
 }

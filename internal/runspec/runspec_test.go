@@ -31,7 +31,7 @@ func sampleResult(pending int) *Result {
 		Revision:    "5c3de85c6df8226ad38ad29d77251ac306d3b9d6",
 		PlanSummary: &corev1alpha1.PlanSummary{ToCreate: 1, ToDestroy: 2},
 	}
-	for i := 0; i < pending; i++ {
+	for range pending {
 		r.PendingDestroy = append(r.PendingDestroy,
 			"apps/x/ns::module.very.long.address.terraform_data.resource_"+strings.Repeat("x", 40))
 	}

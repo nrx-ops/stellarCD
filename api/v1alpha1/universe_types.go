@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // UniverseFinalizer guards the tenant namespace so it is torn down only after
@@ -160,5 +161,8 @@ type UniverseList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&Universe{}, &UniverseList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(SchemeGroupVersion, &Universe{}, &UniverseList{})
+		return nil
+	})
 }

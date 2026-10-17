@@ -235,11 +235,11 @@ func ParseLog(log, nonce string) (corev1alpha1.FlareStep, *Result, error) {
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
 		line := strings.TrimRight(scanner.Text(), "\r")
-		idx := strings.Index(line, prefix)
-		if idx < 0 {
+		_, after, ok0 := strings.Cut(line, prefix)
+		if !ok0 {
 			continue
 		}
-		body := line[idx+len(prefix):]
+		body := after
 
 		if rest, ok := strings.CutPrefix(body, "step::"); ok {
 			step = corev1alpha1.FlareStep(rest)

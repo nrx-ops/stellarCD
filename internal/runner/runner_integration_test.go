@@ -138,7 +138,7 @@ func TestRunnerTerraformDestroyProtection(t *testing.T) {
 	base := runspec.Request{
 		Engine:     corev1alpha1.EngineTerraform,
 		Scope:      corev1alpha1.FlareScopeAll,
-		Repository: runspec.Repository{URL: repo.url(), Branch: "main", Path: "infra"},
+		Repository: runspec.Repository{URL: repo.url(), Branch: defaultBranch, Path: "infra"},
 		Lock:       true,
 	}
 
@@ -209,7 +209,7 @@ func TestRunnerEngineVersionMismatch(t *testing.T) {
 		Engine:        corev1alpha1.EngineTerraform,
 		EngineVersion: "0.12.0",
 		Scope:         corev1alpha1.FlareScopeAll,
-		Repository:    runspec.Repository{URL: repo.url(), Branch: "main"},
+		Repository:    runspec.Repository{URL: repo.url(), Branch: defaultBranch},
 	})
 	if res.Succeeded || res.Step != corev1alpha1.FlareStepInit ||
 		!strings.Contains(res.Message, "0.12.0 was requested") {
@@ -248,7 +248,7 @@ inputs = { name = ` + input + ` }
 		Engine:     corev1alpha1.EngineTerraform,
 		Terragrunt: &runspec.Terragrunt{Mode: corev1alpha1.TerragruntModeRunAll, ExcludedUnits: []string{"data/db"}},
 		Scope:      corev1alpha1.FlareScopeAll,
-		Repository: runspec.Repository{URL: repo.url(), Branch: "main", Path: "stack"},
+		Repository: runspec.Repository{URL: repo.url(), Branch: defaultBranch, Path: "stack"},
 		Lock:       true,
 	}
 

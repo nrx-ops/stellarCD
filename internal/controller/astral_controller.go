@@ -282,7 +282,7 @@ func (r *AstralReconciler) listFlares(
 
 	flares := list.Items
 	slices.SortFunc(flares, func(a, b corev1alpha1.Flare) int {
-		return b.CreationTimestamp.Time.Compare(a.CreationTimestamp.Time)
+		return b.CreationTimestamp.Compare(a.CreationTimestamp.Time)
 	})
 	return flares, nil
 }
@@ -463,7 +463,7 @@ func (r *AstralReconciler) foldSync(astral *corev1alpha1.Astral, flares []corev1
 // newest word per unit. An excluded unit was not looked at, so an older
 // observation of it still stands.
 func foldUnits(units map[string]corev1alpha1.UnitStatus, flare *corev1alpha1.Flare) {
-	record := func(path string, result corev1alpha1.UnitResult, summary *corev1alpha1.PlanSummary, msg string) {
+	note := func(path string, result corev1alpha1.UnitResult, summary *corev1alpha1.PlanSummary, msg string) {
 		if _, seen := units[path]; seen {
 			return
 		}
@@ -486,9 +486,9 @@ func foldUnits(units map[string]corev1alpha1.UnitStatus, flare *corev1alpha1.Fla
 	if flare.Spec.EffectiveScope() == corev1alpha1.FlareScopeUnit {
 		switch {
 		case informative(flare):
-			record(flare.Spec.UnitPath, corev1alpha1.UnitResultSucceeded, flare.Status.PlanSummary, "")
+			note(flare.Spec.UnitPath, corev1alpha1.UnitResultSucceeded, flare.Status.PlanSummary, "")
 		case flare.Status.Phase == corev1alpha1.FlarePhaseFailed:
-			record(flare.Spec.UnitPath, corev1alpha1.UnitResultFailed, nil, flare.Status.Message)
+			note(flare.Spec.UnitPath, corev1alpha1.UnitResultFailed, nil, flare.Status.Message)
 		}
 		return
 	}
@@ -496,7 +496,7 @@ func foldUnits(units map[string]corev1alpha1.UnitStatus, flare *corev1alpha1.Fla
 		if u.Result == corev1alpha1.UnitResultExcluded {
 			continue
 		}
-		record(u.Path, u.Result, u.PlanSummary, u.Message)
+		note(u.Path, u.Result, u.PlanSummary, u.Message)
 	}
 }
 

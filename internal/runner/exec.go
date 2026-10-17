@@ -229,12 +229,12 @@ func diagnostics(out string) (errs []string, warns []string) {
 	for line := range strings.SplitSeq(out, "\n") {
 		trimmed := strings.TrimSpace(line)
 		// Terragrunt prefixes unit output, e.g. "[apps/x] terraform: Error: ...".
-		if i := strings.Index(trimmed, "Error: "); i >= 0 {
-			errs = appendCapped(errs, strings.TrimSpace(trimmed[i+len("Error: "):]))
+		if _, after, ok := strings.Cut(trimmed, "Error: "); ok {
+			errs = appendCapped(errs, strings.TrimSpace(after))
 			continue
 		}
-		if i := strings.Index(trimmed, "Warning: "); i >= 0 {
-			warns = appendCapped(warns, strings.TrimSpace(trimmed[i+len("Warning: "):]))
+		if _, after, ok := strings.Cut(trimmed, "Warning: "); ok {
+			warns = appendCapped(warns, strings.TrimSpace(after))
 		}
 	}
 	return errs, warns

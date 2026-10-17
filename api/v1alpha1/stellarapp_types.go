@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // Phase is a coarse, human-readable summary of where a StellarApp sits in the
@@ -154,5 +155,8 @@ type StellarAppList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&StellarApp{}, &StellarAppList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(SchemeGroupVersion, &StellarApp{}, &StellarAppList{})
+		return nil
+	})
 }

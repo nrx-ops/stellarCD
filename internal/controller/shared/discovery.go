@@ -26,7 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -129,12 +129,15 @@ func ListRepositoryTree(
 	return tree, nil
 }
 
+// terragruntMarker is the file that declares a Terragrunt unit.
+const terragruntMarker = "terragrunt.hcl"
+
 // engineMarkers returns the filenames that identify a root module for an
 // engine. Terragrunt units are declared by their own file; Terraform and
 // OpenTofu are identified by any .tf file in the directory, handled below.
 func engineMarker(engine string) string {
 	if strings.EqualFold(engine, "Terragrunt") {
-		return "terragrunt.hcl"
+		return terragruntMarker
 	}
 	return ".tf"
 }
@@ -154,9 +157,9 @@ func DetectModules(files []string, engine string) []Module {
 		base := path.Base(file)
 		dir := path.Dir(file)
 
-		switch {
-		case marker == "terragrunt.hcl":
-			if base != "terragrunt.hcl" {
+		switch marker {
+		case terragruntMarker:
+			if base != terragruntMarker {
 				continue
 			}
 		default:
@@ -175,7 +178,7 @@ func DetectModules(files []string, engine string) []Module {
 	for dir, base := range seen {
 		modules = append(modules, Module{Path: dir, Marker: base})
 	}
-	sort.Slice(modules, func(i, j int) bool { return modules[i].Path < modules[j].Path })
+	slices.SortFunc(modules, func(a, b Module) int { return strings.Compare(a.Path, b.Path) })
 	return modules
 }
 

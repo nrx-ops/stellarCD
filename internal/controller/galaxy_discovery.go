@@ -19,7 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -243,6 +244,9 @@ func (r *GalaxyReconciler) discoveryCredentials(
 	return secret.Data, nil
 }
 
+// defaultWorkspace matches the kubebuilder default of AstralSpec.WorkspaceName.
+const defaultWorkspace = "default"
+
 // upsertDiscoveredAstral creates or refreshes one Astral.
 //
 // Only the fields discovery actually owns are written: the module path, the
@@ -272,13 +276,9 @@ func (r *GalaxyReconciler) upsertDiscoveredAstral(
 			astral.Labels[corev1alpha1.LabelUniverse] = galaxy.Spec.UniverseRef
 			astral.Labels[corev1alpha1.LabelGalaxy] = galaxy.Name
 			astral.Labels[corev1alpha1.LabelDiscoveredBy] = galaxy.Name
-			for k, v := range galaxy.Spec.Labels {
-				astral.Labels[k] = v
-			}
+			maps.Copy(astral.Labels, galaxy.Spec.Labels)
 			if spec.Template != nil {
-				for k, v := range spec.Template.Labels {
-					astral.Labels[k] = v
-				}
+				maps.Copy(astral.Labels, spec.Template.Labels)
 			}
 		} else {
 			return fmt.Errorf(
@@ -306,7 +306,7 @@ func (r *GalaxyReconciler) upsertDiscoveredAstral(
 			SecretRef: repo.SecretRef,
 		}
 		if astral.Spec.WorkspaceName == "" {
-			astral.Spec.WorkspaceName = "default"
+			astral.Spec.WorkspaceName = defaultWorkspace
 		}
 		astral.Spec.EnableLocking = true
 
@@ -359,7 +359,7 @@ func (r *GalaxyReconciler) pruneDiscoveredAstrals(
 			stale = append(stale, list.Items[i].Name)
 		}
 	}
-	sort.Strings(stale)
+	slices.Sort(stale)
 
 	pruned := 0
 	for _, name := range stale {

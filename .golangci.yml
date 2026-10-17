@@ -53,6 +53,17 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # Test fixtures repeat literals (unit paths, branch names) on purpose:
+      # each table row reads on its own.
+      - linters:
+          - goconst
+        path: _test\.go
+      # Reconcile errors double as user-facing messages: cause.Error() is copied
+      # verbatim into status conditions and Flare.status.message, and starts
+      # with the Kind it names ("Galaxy \"x\" does not exist").
+      - linters:
+          - staticcheck
+        text: "ST1005:"
     paths:
       - third_party$
       - builtin$

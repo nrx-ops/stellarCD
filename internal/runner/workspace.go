@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,6 +29,9 @@ import (
 
 	"github.com/nrx-ops/stellarCD/internal/controller/shared"
 )
+
+// defaultBranch is checked out when the request names no branch.
+const defaultBranch = "main"
 
 // CheckoutRequest describes the working copy a Flare needs.
 type CheckoutRequest struct {
@@ -113,7 +117,7 @@ func (w *GitWorkspace) Prepare(ctx context.Context, req CheckoutRequest) (*Check
 
 	branch := req.Branch
 	if branch == "" {
-		branch = "main"
+		branch = defaultBranch
 	}
 	if err := w.sync(ctx, repoDir, req.URL, branch, checkout); err != nil {
 		_ = w.Cleanup(checkout)
@@ -144,13 +148,13 @@ func (w *GitWorkspace) Prepare(ctx context.Context, req CheckoutRequest) (*Check
 
 // sync clones on first use and fetches afterwards, so a busy Astral does not
 // re-download its whole history on every Flare.
-func (w *GitWorkspace) sync(ctx context.Context, repoDir, url, branch string, checkout *Checkout) error {
+func (w *GitWorkspace) sync(ctx context.Context, repoDir, remoteURL, branch string, checkout *Checkout) error {
 	env := gitEnv(checkout.Env)
 	runner := w.runner()
 
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
 		out, _, cloneErr := runner(ctx, repoDir, env, "git",
-			"clone", "--depth=1", "--branch", branch, "--single-branch", url, ".")
+			"clone", "--depth=1", "--branch", branch, "--single-branch", remoteURL, ".")
 		if cloneErr != nil {
 			return fmt.Errorf("failed to clone repository: %w: %s", cloneErr, lastLine(out))
 		}
@@ -347,9 +351,7 @@ func gitEnv(extra map[string]string) []string {
 		"HOME":                os.Getenv("HOME"),
 		"GIT_TERMINAL_PROMPT": "0",
 	}
-	for k, v := range extra {
-		env[k] = v
-	}
+	maps.Copy(env, extra)
 	return renderEnv(env)
 }
 
@@ -399,8 +401,8 @@ func ensureTrailingNewline(data []byte) []byte {
 // git puts its failure reason.
 func lastLine(out string) string {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
+	for _, v := range slices.Backward(lines) {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
 			return trimmed
 		}
 	}

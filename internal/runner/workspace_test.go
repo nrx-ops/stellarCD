@@ -64,7 +64,7 @@ func TestPrepareClonesIntoAnEmptyDirectory(t *testing.T) {
 	checkout, err := w.Prepare(context.Background(), CheckoutRequest{
 		Key:         "universe/galaxy/astral",
 		URL:         "https://github.com/4sh/cinng-iac",
-		Branch:      "main",
+		Branch:      defaultBranch,
 		Path:        ".",
 		Credentials: map[string][]byte{shared.SecretKeyToken: []byte("ghp_example")},
 	})
@@ -119,7 +119,7 @@ func TestPrepareWithoutCredentialsStagesNothing(t *testing.T) {
 	checkout, err := w.Prepare(context.Background(), CheckoutRequest{
 		Key:    "universe/galaxy/public",
 		URL:    "https://github.com/4sh/public",
-		Branch: "main",
+		Branch: defaultBranch,
 		Path:   ".",
 	})
 	if err != nil {

@@ -44,15 +44,14 @@ const (
 
 // applyCondition upserts a condition, stamping the observed generation and
 // letting apimeta preserve LastTransitionTime when nothing actually changed.
-// It reports whether the condition list was modified.
 func applyCondition(
 	conditions *[]metav1.Condition,
 	generation int64,
 	condType string,
 	status metav1.ConditionStatus,
 	reason, message string,
-) bool {
-	return apimeta.SetStatusCondition(conditions, metav1.Condition{
+) {
+	apimeta.SetStatusCondition(conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,

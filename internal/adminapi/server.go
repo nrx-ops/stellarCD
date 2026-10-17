@@ -21,12 +21,13 @@ limitations under the License.
 package adminapi
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -184,7 +185,7 @@ func (s *Server) handleListCRDs(w http.ResponseWriter, r *http.Request) {
 		out = append(out, info)
 	}
 
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b CRDInfo) int { return cmp.Compare(a.Name, b.Name) })
 	s.writeJSON(w, r, out)
 }
 
@@ -200,7 +201,7 @@ func (s *Server) handleListNamespaces(w http.ResponseWriter, r *http.Request) {
 	for i := range list.Items {
 		out = append(out, list.Items[i].Name)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	s.writeJSON(w, r, out)
 }
 
@@ -276,7 +277,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	err := s.Reader.List(r.Context(), &list,
 		client.InNamespace(namespace),
 		client.MatchingFields{
-			"involvedObject.kind": "StellarApp",
+			"involvedObject.kind": kindStellarApp,
 			"involvedObject.name": name,
 		},
 	)
@@ -285,8 +286,8 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort.Slice(list.Items, func(i, j int) bool {
-		return eventTime(&list.Items[i]).Before(eventTime(&list.Items[j]))
+	slices.SortFunc(list.Items, func(a, b corev1.Event) int {
+		return eventTime(&a).Compare(eventTime(&b))
 	})
 
 	if len(list.Items) > maxEvents {
