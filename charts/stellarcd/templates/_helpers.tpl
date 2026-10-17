@@ -97,6 +97,10 @@ Image references. An empty tag falls back to the chart's appVersion so that
 {{- printf "%s:%s" .Values.controller.image.repository (default .Chart.AppVersion .Values.controller.image.tag) }}
 {{- end }}
 
+{{- define "stellarcd.runner.image" -}}
+{{- printf "%s:%s" .Values.runner.image.repository (default .Chart.AppVersion .Values.runner.image.tag) }}
+{{- end }}
+
 {{- define "stellarcd.ui.image" -}}
 {{- printf "%s:%s" .Values.ui.image.repository (default .Chart.AppVersion .Values.ui.image.tag) }}
 {{- end }}

@@ -16,100 +16,123 @@ metadata:
   {{- end }}
 rules:
   - apiGroups:
-      - ""
+    - ""
     resources:
-      - configmaps
-      - namespaces
-      - resourcequotas
-      - secrets
+    - configmaps
+    - namespaces
+    - resourcequotas
+    - secrets
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
   - apiGroups:
-      - ""
+    - ""
     resources:
-      - events
+    - events
     verbs:
-      - create
-      - get
-      - list
-      - patch
-      - watch
+    - create
+    - get
+    - list
+    - patch
+    - watch
   - apiGroups:
-      - apiextensions.k8s.io
+    - ""
     resources:
-      - customresourcedefinitions
+    - pods
     verbs:
-      - get
-      - list
-      - watch
+    - get
+    - list
   - apiGroups:
-      - core.stellarcd.io
+    - ""
     resources:
-      - astrals
-      - flares
-      - galaxies
-      - stellarapps
-      - universes
+    - pods/log
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - get
   - apiGroups:
-      - core.stellarcd.io
+    - apiextensions.k8s.io
     resources:
-      - astrals/finalizers
-      - flares/finalizers
-      - galaxies/finalizers
-      - stellarapps/finalizers
-      - universes/finalizers
+    - customresourcedefinitions
     verbs:
-      - update
+    - get
+    - list
+    - watch
   - apiGroups:
-      - core.stellarcd.io
+    - batch
     resources:
-      - astrals/status
-      - flares/status
-      - galaxies/status
-      - stellarapps/status
-      - universes/status
+    - jobs
     verbs:
-      - get
-      - patch
-      - update
+    - create
+    - delete
+    - get
+    - list
+    - watch
   - apiGroups:
-      - networking.k8s.io
+    - core.stellarcd.io
     resources:
-      - networkpolicies
+    - astrals
+    - flares
+    - galaxies
+    - stellarapps
+    - universes
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
   - apiGroups:
-      - rbac.authorization.k8s.io
+    - core.stellarcd.io
     resources:
-      - rolebindings
+    - astrals/finalizers
+    - flares/finalizers
+    - galaxies/finalizers
+    - stellarapps/finalizers
+    - universes/finalizers
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - update
+  - apiGroups:
+    - core.stellarcd.io
+    resources:
+    - astrals/status
+    - flares/status
+    - galaxies/status
+    - stellarapps/status
+    - universes/status
+    verbs:
+    - get
+    - patch
+    - update
+  - apiGroups:
+    - networking.k8s.io
+    resources:
+    - networkpolicies
+    verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - rbac.authorization.k8s.io
+    resources:
+    - rolebindings
+    verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
   {{- if .Values.rbac.tenantRoles.create }}
   {{/*
   "bind" lets the Universe controller grant these two roles inside tenant

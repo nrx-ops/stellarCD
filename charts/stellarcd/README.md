@@ -51,7 +51,7 @@ make helm-crds      # sync into charts/stellarcd/crds/ and kubectl apply
 helm uninstall stellarcd -n stellarcd-system
 ```
 
-CRDs, any existing custom resources, and a workspace PVC created by the chart all survive this on purpose. Remove them explicitly:
+CRDs and any existing custom resources survive this on purpose. Remove them explicitly:
 
 ```bash
 kubectl delete -f charts/stellarcd/crds/
@@ -79,11 +79,6 @@ kubectl delete pvc -n stellarcd-system -l app.kubernetes.io/instance=stellarcd
 | `controller.image.tag` | `""` | Image tag; falls back to `.Chart.AppVersion`. |
 | `controller.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `controller.leaderElection.enabled` | `true` | Guards against two managers reconciling one Terraform state. Required when `replicaCount > 1`. |
-| `controller.workspace.mountPath` | `/var/lib/stellarcd/workspaces` | Where Git checkouts and Terraform working dirs land. Must be writable — the root filesystem is not. |
-| `controller.workspace.type` | `emptyDir` | `emptyDir` or `persistentVolumeClaim`. |
-| `controller.workspace.emptyDir.sizeLimit` | `2Gi` | Cap on the scratch volume. |
-| `controller.workspace.persistentVolumeClaim.existingClaim` | `""` | Reuse a claim instead of creating one. |
-| `controller.workspace.persistentVolumeClaim.size` | `10Gi` | Size of the chart-created claim. |
 | `controller.adminApi.enabled` | `true` | Serve the read-only API the dashboard reads through. |
 | `controller.adminApi.port` | `8080` | Admin API container port. |
 | `controller.adminApi.service.type` | `ClusterIP` | Admin API Service type. Keep internal: it is unauthenticated. |
@@ -102,6 +97,14 @@ kubectl delete pvc -n stellarcd-system -l app.kubernetes.io/instance=stellarcd
 | `controller.terminationGracePeriodSeconds` | `10` | Time for in-flight Terraform runs to abort on SIGTERM. |
 | `controller.podDisruptionBudget.enabled` | `false` | Create a `PodDisruptionBudget`. |
 | `controller.nodeSelector` / `tolerations` / `affinity` / `topologySpreadConstraints` | `{}` / `[]` | Standard scheduling controls. |
+
+### Runner
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `runner.image.repository` | `runner` | Image of the Jobs that execute Flares: the stellarCD runner, git, Terraform, OpenTofu and Terragrunt. |
+| `runner.image.tag` | `""` | Image tag; falls back to `.Chart.AppVersion`. |
+| `runner.image.pullPolicy` | `IfNotPresent` | Pull policy of the runner image. |
 
 ### Dashboard
 

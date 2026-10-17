@@ -67,28 +67,6 @@ controller:
     tag: ""
     pullPolicy: IfNotPresent
 
-  # Where Git checkouts and Terraform/Terragrunt working directories land.
-  # The manager runs with a read-only root filesystem, so this path must be
-  # backed by a writable volume or every run fails on checkout.
-  workspace:
-    mountPath: /var/lib/stellarcd/workspaces
-    # -- "emptyDir" or "persistentVolumeClaim". emptyDir is wiped on every pod
-    # restart, which costs a full re-clone and re-`init` but never goes stale.
-    # Use a PVC to keep provider plugins and module caches across restarts.
-    type: emptyDir
-    emptyDir:
-      sizeLimit: 2Gi
-      # -- Set to "Memory" for a tmpfs-backed workspace (counts against the
-      # container's memory limit).
-      medium: ""
-    persistentVolumeClaim:
-      # -- Bind an already-provisioned claim instead of letting the chart create one.
-      existingClaim: ""
-      storageClassName: ""
-      accessModes:
-        - ReadWriteOnce
-      size: 10Gi
-
   leaderElection:
     # -- Leader election guards against two managers reconciling the same
     # Terraform state at once. Keep enabled whenever replicaCount > 1.
@@ -187,6 +165,16 @@ controller:
     enabled: false
     minAvailable: 1
     # maxUnavailable: 1
+
+# The image of the Jobs that execute Flares. Each Flare runs in a Job of its
+# own, built from this image: the stellarCD runner plus git, Terraform,
+# OpenTofu and Terragrunt. The controller itself never runs an engine.
+runner:
+  image:
+    repository: runner
+    # -- Image tag. Falls back to the chart's appVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
 
 ui:
   # -- Deploy the dashboard. The operator works fine without it.

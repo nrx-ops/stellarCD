@@ -24,9 +24,23 @@ spec:
     - jsonPath: .spec.action
       name: Action
       type: string
+    - jsonPath: .spec.scope
+      name: Scope
+      priority: 1
+      type: string
+    - jsonPath: .spec.trigger
+      name: Trigger
+      priority: 1
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.step
+      name: Step
+      type: string
+    - jsonPath: .status.planSummary.toDestroy
+      name: Destroy
+      type: integer
     - jsonPath: .status.duration
       name: Duration
       type: string
@@ -65,9 +79,10 @@ spec:
             description: |-
               FlareSpec defines the desired state of a Flare.
 
-              A Flare is a single, one-shot run. Everything except approved and cancel is
-              immutable after creation: re-running means creating a new Flare, which keeps
-              the history honest.
+              A Flare is a single, one-shot run, executed in a Kubernetes Job the Flare
+              owns. Everything except approved, confirmDestroy and cancel is immutable
+              after creation: re-running means creating a new Flare, which keeps the
+              history honest.
             properties:
               action:
                 description: Action is the engine operation to perform.
@@ -100,6 +115,14 @@ spec:
                 description: Cancel asks the controller to abort a running Flare.
                   It is one-way.
                 type: boolean
+              confirmDestroy:
+                description: |-
+                  ConfirmDestroy releases an apply whose plan destroys resources. It must
+                  be set to the Astral's name, which is what the confirmation dialog asks
+                  the user to type. Like approved, it may be set after creation. It only
+                  covers the resources listed in status.pendingDestroy: a fresh plan that
+                  destroys anything else is held again.
+                type: string
               galaxyRef:
                 description: GalaxyRef is the name of the owning Galaxy. Immutable.
                 maxLength: 253
@@ -112,6 +135,10 @@ spec:
                 maximum: 256
                 minimum: 1
                 type: integer
+              planRef:
+                description: PlanRef is the Plan Flare an Apply follows, when it was
+                  chained from one.
+                type: string
               refreshBeforePlan:
                 default: true
                 description: |-
@@ -119,9 +146,25 @@ spec:
                   provider round trip.
                 type: boolean
               requestedBy:
-                description: RequestedBy is the email of the human or system that
-                  raised this run.
+                description: |-
+                  RequestedBy is the email of the human or system that raised this run.
+                  It is the field the specification calls initiatedBy.
                 pattern: ^$|^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$
+                type: string
+              revision:
+                description: |-
+                  Revision pins the commit to run. Empty means the tip of the tracked
+                  branch, resolved when the Job fetches the repository; the SHA actually
+                  run is reported in status.revision either way.
+                pattern: ^$|^[0-9a-f]{7,40}$
+                type: string
+              scope:
+                default: All
+                description: Scope is All for the whole Astral, or Unit for one unit
+                  of a RunAll Astral.
+                enum:
+                - All
+                - Unit
                 type: string
               tags:
                 additionalProperties:
@@ -132,12 +175,28 @@ spec:
               timeoutSeconds:
                 default: 3600
                 description: |-
-                  TimeoutSeconds bounds the run. The engine process is killed when it fires
-                  and the Flare moves to Cancelled.
+                  TimeoutSeconds bounds the run. It becomes the Job's activeDeadlineSeconds:
+                  the pod is killed when it fires and the Flare moves to Cancelled.
                 format: int32
                 maximum: 86400
                 minimum: 60
                 type: integer
+              trigger:
+                default: Manual
+                description: |-
+                  Trigger records why this Flare exists. Automatic Flares always cover the
+                  whole Astral.
+                enum:
+                - Manual
+                - Schedule
+                - GitChange
+                - Drift
+                type: string
+              unitPath:
+                description: |-
+                  UnitPath is the targeted unit, relative to the Astral path. Required
+                  when scope is Unit.
+                type: string
               universeRef:
                 description: UniverseRef is the name of the owning Universe. Immutable.
                 maxLength: 253
@@ -155,6 +214,12 @@ spec:
             - galaxyRef
             - universeRef
             type: object
+            x-kubernetes-validations:
+            - message: unitPath is required when scope is Unit
+              rule: self.scope != 'Unit' || (has(self.unitPath) && size(self.unitPath)
+                > 0)
+            - message: only a manual Flare may target a single unit
+              rule: self.scope != 'Unit' || self.trigger == 'Manual'
           status:
             description: FlareStatus reports the observed state of a Flare.
             properties:
@@ -183,8 +248,16 @@ spec:
                       taken after the run.
                     type: string
                 type: object
+              attempt:
+                description: |-
+                  Attempt counts the Jobs this Flare launched: the first one plans, and
+                  a second one runs only after a destroy confirmation.
+                format: int32
+                type: integer
               completionTime:
-                description: CompletionTime is when the run reached a terminal phase.
+                description: |-
+                  CompletionTime is when the run reached a terminal phase. It is the field
+                  the specification calls finishedAt.
                 format: date-time
                 type: string
               conditions:
@@ -256,18 +329,99 @@ spec:
                 items:
                   type: string
                 type: array
+              jobName:
+                description: JobName is the Job currently or last executing this Flare.
+                type: string
+              lockAcquiredAt:
+                description: |-
+                  LockAcquiredAt is set while this Flare holds its Astral's run lock, that
+                  is while its Job is live. At most one non-terminal Flare per Astral has
+                  it set. It lives in the status rather than in controller memory so that a
+                  restart or a leader change cannot lose it.
+                format: date-time
+                type: string
+              message:
+                description: Message is a one-line summary of the outcome, for display.
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the spec generation last processed.
                 format: int64
                 type: integer
+              pendingDestroy:
+                description: |-
+                  PendingDestroy lists the resources an apply would delete or replace and
+                  that wait for spec.confirmDestroy. Unit-qualified in RunAll mode.
+                items:
+                  type: string
+                maxItems: 1000
+                type: array
               phase:
                 description: Phase is a coarse summary of the run.
                 type: string
               planOutput:
                 description: PlanOutput is the truncated, human-readable plan summary.
                 type: string
+              planSummary:
+                description: PlanSummary counts what the plan would change, over the
+                  whole scope.
+                properties:
+                  toCreate:
+                    description: ToCreate is the number of resources the plan adds.
+                    format: int32
+                    type: integer
+                  toDestroy:
+                    description: ToDestroy is the number of resources the plan deletes
+                      outright.
+                    format: int32
+                    type: integer
+                  toReplace:
+                    description: ToReplace is the number of resources deleted and
+                      recreated.
+                    format: int32
+                    type: integer
+                  toUpdate:
+                    description: ToUpdate is the number of resources changed in place.
+                    format: int32
+                    type: integer
+                type: object
+              resourceChanges:
+                description: |-
+                  ResourceChanges lists the resources the plan touches, capped at 200
+                  entries; ResourceChangesTruncated says whether more were left out.
+                items:
+                  description: |-
+                    ResourceChange is one resource a plan touches. It carries the address and
+                    the action only, never attribute values: those can hold secrets.
+                  properties:
+                    action:
+                      description: Action is what the plan does to it.
+                      enum:
+                      - Create
+                      - Update
+                      - Delete
+                      - Replace
+                      type: string
+                    address:
+                      description: Address is the resource address, e.g. "module.db.aws_db_instance.main".
+                      type: string
+                    unit:
+                      description: Unit is the Terragrunt unit holding the resource,
+                        in RunAll mode.
+                      type: string
+                  required:
+                  - action
+                  - address
+                  type: object
+                maxItems: 200
+                type: array
+              resourceChangesTruncated:
+                description: ResourceChangesTruncated reports that resourceChanges
+                  is incomplete.
+                type: boolean
               resources:
-                description: Resources is the delta reported by the engine.
+                description: |-
+                  Resources is the delta the engine reported having applied. What a plan
+                  would change is in planSummary instead.
                 properties:
                   created:
                     description: Created is the number of resources added.
@@ -286,10 +440,75 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              revision:
+                description: Revision is the commit SHA the Job actually ran.
+                type: string
               startTime:
-                description: StartTime is when the engine process was launched.
+                description: |-
+                  StartTime is when the first Job was created. It is the field the
+                  specification calls startedAt.
                 format: date-time
                 type: string
+              step:
+                description: Step is where the run has got to inside its Job.
+                enum:
+                - GitFetch
+                - Init
+                - Plan
+                - Apply
+                - Report
+                type: string
+              unitResults:
+                description: UnitResults is the per-unit outcome, in RunAll mode.
+                items:
+                  description: FlareUnitResult is the outcome of one unit in a RunAll
+                    Flare.
+                  properties:
+                    message:
+                      description: Message explains a failed, skipped or excluded
+                        unit.
+                      type: string
+                    path:
+                      description: Path is the unit directory, relative to the Astral
+                        path.
+                      type: string
+                    planSummary:
+                      description: PlanSummary is what the unit's plan would change.
+                      properties:
+                        toCreate:
+                          description: ToCreate is the number of resources the plan
+                            adds.
+                          format: int32
+                          type: integer
+                        toDestroy:
+                          description: ToDestroy is the number of resources the plan
+                            deletes outright.
+                          format: int32
+                          type: integer
+                        toReplace:
+                          description: ToReplace is the number of resources deleted
+                            and recreated.
+                          format: int32
+                          type: integer
+                        toUpdate:
+                          description: ToUpdate is the number of resources changed
+                            in place.
+                          format: int32
+                          type: integer
+                      type: object
+                    result:
+                      description: Result is the unit outcome.
+                      enum:
+                      - Succeeded
+                      - Failed
+                      - Skipped
+                      - Excluded
+                      type: string
+                  required:
+                  - path
+                  - result
+                  type: object
+                type: array
               warnings:
                 description: Warnings holds non-fatal diagnostics.
                 items:

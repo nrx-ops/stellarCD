@@ -32,6 +32,13 @@ controller:
       cpu: 10m
       memory: 64Mi
 
+runner:
+  image:
+    repository: runner
+    tag: latest
+    # Loaded into minikube's daemon like the controller image; never pulled.
+    pullPolicy: IfNotPresent
+
 ui:
   enabled: true
   image:

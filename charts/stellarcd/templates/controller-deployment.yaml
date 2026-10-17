@@ -63,6 +63,8 @@ spec:
             {{- else }}
             - --admin-api-bind-address=0
             {{- end }}
+            - --runner-image={{ include "stellarcd.runner.image" . }}
+            - --runner-image-pull-policy={{ .Values.runner.image.pullPolicy }}
             {{- with .Values.controller.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -118,33 +120,18 @@ spec:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           volumeMounts:
             {{- /*
-            readOnlyRootFilesystem is on, so every path the manager writes to
-            needs a volume: /tmp for $HOME and scratch, and the workspace root
-            for Git checkouts and Terraform state directories.
+            readOnlyRootFilesystem is on, so /tmp needs a volume for $HOME and
+            scratch. The manager clones nothing and runs no engine: each Flare
+            runs in its own Job, which brings its own scratch space.
             */}}
             - name: tmp
               mountPath: /tmp
-            - name: workspace
-              mountPath: {{ .Values.controller.workspace.mountPath }}
             {{- with .Values.controller.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
-        - name: workspace
-        {{- if eq .Values.controller.workspace.type "persistentVolumeClaim" }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.controller.workspace.persistentVolumeClaim.existingClaim | default (printf "%s-workspace" (include "stellarcd.fullname" .)) }}
-        {{- else }}
-          emptyDir:
-            {{- with .Values.controller.workspace.emptyDir.sizeLimit }}
-            sizeLimit: {{ . }}
-            {{- end }}
-            {{- with .Values.controller.workspace.emptyDir.medium }}
-            medium: {{ . }}
-            {{- end }}
-        {{- end }}
         {{- with .Values.controller.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -43,12 +43,10 @@ Set controller.metrics.serviceMonitor.enabled=true if you run the Prometheus Ope
 {{- end }}
 {{- end }}
 
-{{- if eq .Values.controller.workspace.type "emptyDir" }}
 
-Git checkouts land on an emptyDir at {{ .Values.controller.workspace.mountPath }} and are lost on
-every pod restart, forcing a re-clone and a fresh `terraform init`. Set
-controller.workspace.type=persistentVolumeClaim to keep them.
-{{- end }}
+Flares run in Jobs built from {{ include "stellarcd.runner.image" . }}. That image must be
+pullable from every tenant namespace, and Terraform state must live in a remote
+backend: a Job's filesystem is gone once it finishes.
 
 CRD schema changes are NOT applied by `helm upgrade` -- Helm never touches the
 crds/ directory after install. Apply them yourself:
