@@ -218,11 +218,18 @@ HELM ?= helm
 CHART_DIR ?= charts/stellarcd
 HELM_RELEASE ?= stellarcd
 HELM_NAMESPACE ?= stellarcd-system
+# KUBE_CONTEXT pins the cluster the Helm targets talk to. Empty means the
+# current kubectl context, which is fine for helm-install on purpose; the
+# minikube targets set it so they can never land on whatever cluster the
+# shell happens to point at.
+KUBE_CONTEXT ?=
+KUBECTL_CTX = $(if $(KUBE_CONTEXT),--context $(KUBE_CONTEXT))
+HELM_CTX = $(if $(KUBE_CONTEXT),--kube-context $(KUBE_CONTEXT))
 
 .PHONY: helm-crds
 helm-crds: manifests ## Sync generated CRDs into the chart and apply them to the cluster.
 	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
-	kubectl apply -f $(CHART_DIR)/crds/
+	kubectl $(KUBECTL_CTX) apply -f $(CHART_DIR)/crds/
 
 .PHONY: helm-lint
 helm-lint: ## Lint the chart and render it with the default and minikube values.
@@ -239,20 +246,20 @@ helm-template: ## Render the chart to stdout with the minikube values.
 
 .PHONY: helm-install
 helm-install: ## Install or upgrade the chart in the current kubectl context.
-	$(HELM) upgrade --install $(HELM_RELEASE) $(CHART_DIR) \
+	$(HELM) upgrade --install $(HELM_RELEASE) $(CHART_DIR) $(HELM_CTX) \
 		--namespace $(HELM_NAMESPACE) --create-namespace \
 		--values $(CHART_DIR)/values-minikube.yaml \
 		--wait --timeout 5m
 
 .PHONY: helm-uninstall
 helm-uninstall: ## Uninstall the release. CRDs and custom resources are left in place.
-	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+	$(HELM) uninstall $(HELM_RELEASE) $(HELM_CTX) --namespace $(HELM_NAMESPACE)
 
 .PHONY: helm-restart
 helm-restart: ## Restart the workloads so they pick up a freshly loaded image.
-	kubectl rollout restart deployment -n $(HELM_NAMESPACE) \
+	kubectl $(KUBECTL_CTX) rollout restart deployment -n $(HELM_NAMESPACE) \
 		-l app.kubernetes.io/instance=$(HELM_RELEASE)
-	kubectl rollout status deployment -n $(HELM_NAMESPACE) \
+	kubectl $(KUBECTL_CTX) rollout status deployment -n $(HELM_NAMESPACE) \
 		-l app.kubernetes.io/instance=$(HELM_RELEASE) --timeout=5m
 
 # The restart is not redundant with helm-install. The chart pins ":latest" with
@@ -260,7 +267,8 @@ helm-restart: ## Restart the workloads so they pick up a freshly loaded image.
 # byte-identical and Helm has nothing to roll out -- the pods keep running the
 # previous image ID. Restarting is what makes this target deploy what it built.
 .PHONY: helm-minikube
-helm-minikube: minikube-build minikube-load helm-install helm-restart ## Build, load and Helm-install into minikube.
+helm-minikube: KUBE_CONTEXT = $(MINIKUBE_PROFILE)
+helm-minikube: minikube-build minikube-load helm-crds helm-install helm-restart ## Build, load and Helm-install into minikube.
 
 ##@ Dependencies
 
