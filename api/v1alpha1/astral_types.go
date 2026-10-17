@@ -28,24 +28,6 @@ const AstralFinalizer = "core.stellarcd.io/astral-cleanup"
 // full record lives in the Flare objects themselves.
 const MaxFlareHistory = 10
 
-// AstralPhase summarises an Astral at a glance.
-type AstralPhase string
-
-const (
-	// AstralPhasePending means an ancestor or a dependency is not ready yet.
-	AstralPhasePending AstralPhase = "Pending"
-	// AstralPhaseReady means the project is configured and idle.
-	AstralPhaseReady AstralPhase = "Ready"
-	// AstralPhasePlanning means a Plan or Refresh Flare is running.
-	AstralPhasePlanning AstralPhase = "Planning"
-	// AstralPhaseApplying means an Apply or Destroy Flare is running.
-	AstralPhaseApplying AstralPhase = "Applying"
-	// AstralPhaseFailed means the last Flare failed.
-	AstralPhaseFailed AstralPhase = "Failed"
-	// AstralPhaseDrifted means the last refresh found real state diverging from code.
-	AstralPhaseDrifted AstralPhase = "Drifted"
-)
-
 // Astral-specific condition types.
 const (
 	// ConditionConfigValid is True once the repository and engine settings are coherent.
@@ -74,7 +56,7 @@ type AstralHooks struct {
 	PostApply []string `json:"postApply,omitempty"`
 }
 
-// DriftDetectionSpec configures the periodic Refresh Flares that compare real
+// DriftDetectionSpec configures the periodic Plan Flares that compare real
 // infrastructure against the tracked revision.
 type DriftDetectionSpec struct {
 	// Enabled turns periodic drift detection on.
@@ -111,11 +93,18 @@ type AstralSpec struct {
 	Description string `json:"description,omitempty"`
 	// VCSRepository locates the root module.
 	VCSRepository VCSRepository `json:"vcsRepository"`
-	// TerraformVersion overrides the Galaxy engine version for this project.
-	// The engine itself is fixed by the Galaxy.
+	// Engine is the binary that runs init, plan and apply and owns the state.
+	// +kubebuilder:default=Terraform
+	// +optional
+	Engine Engine `json:"engine,omitempty"`
+	// EngineVersion is the exact engine version, e.g. "1.16.6". Empty means the
+	// version the runner image ships; a mismatch fails the Flare before init.
 	// +kubebuilder:validation:Pattern=`^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$`
 	// +optional
-	TerraformVersion string `json:"terraformVersion,omitempty"`
+	EngineVersion string `json:"engineVersion,omitempty"`
+	// Terragrunt puts Terragrunt in front of the engine.
+	// +optional
+	Terragrunt *TerragruntSpec `json:"terragrunt,omitempty"`
 	// Variables are non-sensitive inputs passed as TF_VAR_<name>. Anything
 	// secret belongs in spec.secrets instead.
 	// +optional
@@ -128,8 +117,10 @@ type AstralSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	WorkspaceName string `json:"workspaceName,omitempty"`
-	// EnableLocking serialises runs against this Astral's state. Turning it off
-	// risks state corruption and is only safe for read-only modules.
+	// EnableLocking passes -lock to the engine, so it takes the backend state
+	// lock. It does not affect stellarCD's own rule of one active Flare per
+	// Astral, which always applies. Turning it off is only safe for read-only
+	// modules.
 	// +kubebuilder:default=true
 	// +optional
 	EnableLocking bool `json:"enableLocking,omitempty"`
@@ -148,11 +139,12 @@ type AstralSpec struct {
 	// CustomHooks are shell commands run around the engine invocation.
 	// +optional
 	CustomHooks *AstralHooks `json:"customHooks,omitempty"`
-	// DependsOn lists Astral names in the same namespace that must be Ready
+	// DependsOn lists Astral names in the same namespace that must be Synced
 	// before this one may run. Cycles are rejected by the validating webhook.
 	// +optional
 	DependsOn []string `json:"dependsOn,omitempty"`
-	// DriftDetection configures the periodic Refresh Flares.
+	// DriftDetection configures the periodic Plan Flares that keep syncStatus
+	// and the drift counts current.
 	// +optional
 	DriftDetection *DriftDetectionSpec `json:"driftDetection,omitempty"`
 }
@@ -189,11 +181,16 @@ type InfrastructureStatus struct {
 	Currency string `json:"currency,omitempty"`
 }
 
-// DriftStatus records the outcome of the last drift check.
+// DriftStatus records the outcome of the last plan: whether real
+// infrastructure diverges from the tracked revision, and by how much. In
+// RunAll mode the counts are summed over the units.
 type DriftStatus struct {
 	// Detected is true while real infrastructure diverges from the tracked revision.
 	// +optional
 	Detected bool `json:"detected"`
+	// PlanSummary is what the last plan would change.
+	// +optional
+	PlanSummary `json:",inline"`
 	// LastDetected is when drift was last observed.
 	// +optional
 	LastDetected *metav1.Time `json:"lastDetected,omitempty"`
@@ -202,11 +199,68 @@ type DriftStatus struct {
 	LastChecked *metav1.Time `json:"lastChecked,omitempty"`
 }
 
+// UnitResult is the outcome of one Terragrunt unit in a RunAll Flare.
+// +kubebuilder:validation:Enum=Succeeded;Failed;Skipped;Excluded
+type UnitResult string
+
+const (
+	// UnitResultSucceeded means the unit planned or applied cleanly.
+	UnitResultSucceeded UnitResult = "Succeeded"
+	// UnitResultFailed means the unit's own run failed.
+	UnitResultFailed UnitResult = "Failed"
+	// UnitResultSkipped means the unit never ran because a unit it depends on failed.
+	UnitResultSkipped UnitResult = "Skipped"
+	// UnitResultExcluded means the unit is listed in terragrunt.excludedUnits.
+	UnitResultExcluded UnitResult = "Excluded"
+)
+
+// UnitStatus is the per-unit view of a RunAll Astral.
+type UnitStatus struct {
+	// Path is the unit directory, relative to the Astral path.
+	Path string `json:"path"`
+	// SyncStatus is the unit's own alignment with the tracked revision.
+	// +optional
+	SyncStatus SyncStatus `json:"syncStatus,omitempty"`
+	// Result is the outcome of the last Flare that ran this unit.
+	// +optional
+	Result UnitResult `json:"result,omitempty"`
+	// Drift is what the last plan would change in this unit.
+	// +optional
+	Drift *PlanSummary `json:"drift,omitempty"`
+	// LastFlare is the last Flare that ran this unit.
+	// +optional
+	LastFlare string `json:"lastFlare,omitempty"`
+	// Message explains a failed or skipped unit.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
 // AstralStatus reports the observed state of an Astral.
 type AstralStatus struct {
-	// Phase is a coarse summary of the project state.
+	// SyncStatus says whether real infrastructure matches the tracked revision.
+	// It replaces the former phase, which mixed what is running with what the
+	// result is: progress is now read from activeFlare, failures from the
+	// Reconciled condition and lastFlareStatus. In RunAll mode it is the worst
+	// status among the units.
 	// +optional
-	Phase AstralPhase `json:"phase,omitempty"`
+	SyncStatus SyncStatus `json:"syncStatus,omitempty"`
+	// ActiveFlare is the Flare currently running against this Astral, if any.
+	// +optional
+	ActiveFlare string `json:"activeFlare,omitempty"`
+	// LastFlareRef is the most recent Flare that reached a terminal phase.
+	// +optional
+	LastFlareRef string `json:"lastFlareRef,omitempty"`
+	// LastSyncedRevision is the commit last applied successfully to the whole Astral.
+	// +optional
+	LastSyncedRevision string `json:"lastSyncedRevision,omitempty"`
+	// LastSyncTime is when that apply finished.
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+	// Units is the per-unit view, in RunAll mode only.
+	// +listType=map
+	// +listMapKey=path
+	// +optional
+	Units []UnitStatus `json:"units,omitempty"`
 	// LastSuccessfulFlare is the name of the last Flare that succeeded.
 	// +optional
 	LastSuccessfulFlare string `json:"lastSuccessfulFlare,omitempty"`
@@ -221,7 +275,7 @@ type AstralStatus struct {
 	// Infrastructure is the last known shape of the managed resources.
 	// +optional
 	Infrastructure *InfrastructureStatus `json:"infrastructure,omitempty"`
-	// Drift records the outcome of the last drift check.
+	// Drift records the outcome of the last plan.
 	// +optional
 	Drift *DriftStatus `json:"drift,omitempty"`
 	// ObservedGeneration is the spec generation last processed.
@@ -252,8 +306,9 @@ func (s *AstralSpec) DriftInterval(fallback metav1.Duration) metav1.Duration {
 // +kubebuilder:printcolumn:name="Galaxy",type=string,JSONPath=`.spec.galaxyRef`
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.vcsRepository.url`
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.vcsRepository.path`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Drift",type=boolean,JSONPath=`.status.drift.detected`
+// +kubebuilder:printcolumn:name="Sync",type=string,JSONPath=`.status.syncStatus`
+// +kubebuilder:printcolumn:name="Destroy",type=integer,JSONPath=`.status.drift.toDestroy`
+// +kubebuilder:printcolumn:name="Active",type=string,JSONPath=`.status.activeFlare`
 // +kubebuilder:printcolumn:name="Last Flare",type=string,JSONPath=`.status.lastSuccessfulFlare`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

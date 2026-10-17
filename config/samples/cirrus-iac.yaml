@@ -52,8 +52,6 @@ spec:
   # An Astral only needs its own secretRef when it reads a different repository.
   vcsSecretRef:
     name: github-4sh
-  terrarium:
-    engine: Terraform
   # RequiresReview is the default and the safe choice: a Plan runs unattended,
   # anything that mutates infrastructure waits for an explicit approval.
   approvalPolicy: RequiresReview
@@ -75,6 +73,7 @@ spec:
     # "." is the repository root. Point this at a subdirectory if the root
     # module lives deeper -- one Astral is one directory, one state.
     path: .
+  engine: Terraform
   workspaceName: default
   # Serialise runs against this state. Only turn it off for read-only modules.
   enableLocking: true

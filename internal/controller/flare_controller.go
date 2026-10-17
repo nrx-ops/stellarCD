@@ -21,11 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,72 +35,79 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	corev1alpha1 "github.com/nrx-ops/stellarCD/api/v1alpha1"
 	"github.com/nrx-ops/stellarCD/internal/controller/shared"
+	"github.com/nrx-ops/stellarCD/internal/runspec"
 )
 
-// runPollInterval paces the reconciler while an engine process is live. The run
-// itself happens on its own goroutine, so this only costs a cheap status read.
-const runPollInterval = 5 * time.Second
+// jobPollInterval paces the reconciler while a Job runs. Job status changes
+// arrive through the watch; the poll is what picks up step markers in the log.
+const jobPollInterval = 5 * time.Second
 
-// lockRetryInterval paces the retry when another Flare holds the state lock.
+// lockRetryInterval paces the retry when another Flare holds the Astral's lock.
 const lockRetryInterval = 15 * time.Second
 
-// maxArtifactBytes caps what is stored in an artifact Secret. etcd rejects
-// values above 1 MiB, so a larger plan file is reported rather than stored.
-const maxArtifactBytes = 768 << 10
+// logTailLines is how much of the runner log is read. The result block sits at
+// the very end; the step markers are scattered through the engine output.
+const logTailLines = int64(2000)
 
-// maxStatusOutput caps the plan/apply summary kept on the status.
+// maxStatusOutput caps the plan/apply output kept on the status.
 const maxStatusOutput = 8 << 10
 
 // Flare-specific condition reasons.
 const (
-	reasonAwaitingApproval = "AwaitingApproval"
-	reasonApproved         = "Approved"
-	reasonRejected         = "Rejected"
-	reasonCancelled        = "Cancelled"
-	reasonLockBusy         = "StateLockBusy"
-	reasonRunStarted       = "RunStarted"
-	reasonRunSucceeded     = "RunSucceeded"
-	reasonRunFailed        = "RunFailed"
-	reasonTimedOut         = "TimedOut"
-	reasonAstralNotReady   = "AstralNotReady"
+	reasonAwaitingApproval     = "AwaitingApproval"
+	reasonApproved             = "Approved"
+	reasonRejected             = "Rejected"
+	reasonCancelled            = "Cancelled"
+	reasonLockBusy             = "FlareAlreadyRunning"
+	reasonRunStarted           = "RunStarted"
+	reasonRunSucceeded         = "RunSucceeded"
+	reasonRunFailed            = "RunFailed"
+	reasonTimedOut             = "TimedOut"
+	reasonAwaitingConfirmation = "AwaitingDestroyConfirmation"
+	reasonDestroyConfirmed     = "DestroyConfirmed"
+	reasonConfirmationMismatch = "ConfirmationMismatch"
+	reasonRunRefused           = "RunRefused"
+	reasonJobLost              = "JobLost"
 )
 
-// FlareReconciler reconciles a Flare: one burst of engine execution, gated by
-// approval, serialised per state and bounded by a timeout.
+// FlareReconciler drives one Flare: approval, the run lock, its Job, the
+// destroy confirmation, and the result.
+//
+// The controller never runs an engine itself. Each attempt is a Kubernetes Job
+// owned by the Flare, so a controller restart or a leader change leaves running
+// applies alone: the next reconcile finds the Job again by name.
 type FlareReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// Executor runs the engine. Defaults to a real os/exec executor.
-	Executor shared.Executor
-	// Workspace materialises the checkout. Defaults to a git CLI provider.
-	Workspace shared.WorkspaceProvider
-	// Locks serialises runs per Astral state.
-	Locks *shared.StateLock
-	// Runs tracks the goroutines executing live Flares.
-	Runs *RunRegistry
-	// ArtifactRetention bounds how long a plan artifact Secret is kept. Zero
-	// keeps it for the lifetime of the Flare.
-	ArtifactRetention time.Duration
+	// APIReader reads Flares straight from the API server when taking the run
+	// lock. The cache can lag behind a status write that another reconcile
+	// just made, and a stale read there would let two Flares in at once.
+	APIReader client.Reader
+	// Logs reads the runner's log, where it reports its progress and result.
+	Logs PodLogReader
+	// Runner configures the Jobs.
+	Runner RunnerConfig
+	// HTTPClient exchanges GitHub App credentials for installation tokens.
+	HTTPClient *http.Client
 }
 
 // +kubebuilder:rbac:groups=core.stellarcd.io,resources=flares,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.stellarcd.io,resources=flares/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.stellarcd.io,resources=flares/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
-// Reconcile drives one Flare from Pending to a terminal phase. The engine runs
-// on its own goroutine so a long apply never pins a reconcile worker; each pass
-// either starts the run, observes it, or records its outcome.
+// Reconcile moves a Flare one step along: start its Job, observe it, or wait
+// for a human.
 func (r *FlareReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	var flare corev1alpha1.Flare
 	if err := r.Get(ctx, req.NamespacedName, &flare); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -112,20 +120,8 @@ func (r *FlareReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	if !controllerutil.ContainsFinalizer(&flare, corev1alpha1.FlareFinalizer) {
-		controllerutil.AddFinalizer(&flare, corev1alpha1.FlareFinalizer)
-		if err := r.Update(ctx, &flare); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to add Flare finalizer: %w", err)
-		}
-		return ctrl.Result{}, nil
-	}
-
-	if run := r.registry().Get(flare.UID); run != nil {
-		return r.observeRun(ctx, &flare, run)
-	}
 	if flare.Spec.Cancel {
-		return r.terminate(ctx, &flare, corev1alpha1.FlarePhaseCancelled, reasonCancelled,
-			"Run cancelled before it started")
+		return r.cancel(ctx, &flare)
 	}
 
 	astral, galaxy, err := r.resolveTargets(ctx, &flare)
@@ -133,38 +129,507 @@ func (r *FlareReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.fail(ctx, &flare, reasonParentMissing, err)
 	}
 
+	switch flare.Status.Phase {
+	case corev1alpha1.FlarePhaseRunning:
+		return r.observe(ctx, &flare, astral, galaxy)
+	case corev1alpha1.FlarePhaseAwaitingConfirmation:
+		return r.awaitConfirmation(ctx, &flare, astral, galaxy)
+	}
+
+	if err := validateRun(&flare, astral); err != nil {
+		return r.terminate(ctx, &flare, corev1alpha1.FlarePhaseFailed, reasonRunRefused, err.Error())
+	}
 	if hold, reason, message := r.approvalHold(&flare, galaxy); hold {
 		return r.awaitApproval(ctx, &flare, reason, message)
 	}
 	applyCondition(&flare.Status.Conditions, flare.Generation,
 		corev1alpha1.ConditionApproved, metav1.ConditionTrue, reasonApproved, "Run is cleared to start")
 
-	lockKey := StateLockKey(&flare)
-	holder := string(flare.UID)
-	if astral.Spec.EnableLocking && !r.locks().TryAcquire(lockKey, holder) {
-		applyCondition(&flare.Status.Conditions, flare.Generation,
-			corev1alpha1.ConditionStarted, metav1.ConditionFalse, reasonLockBusy,
-			"Another Flare holds the state lock for "+lockKey)
-		flare.Status.Phase = corev1alpha1.FlarePhasePending
-		if err := r.updateStatus(ctx, &flare); err != nil {
+	return r.start(ctx, &flare, astral, galaxy, nil)
+}
+
+// validateRun refuses a run the configuration cannot honour, before anything
+// is locked or launched.
+func validateRun(flare *corev1alpha1.Flare, astral *corev1alpha1.Astral) error {
+	runAll := astral.Spec.Terragrunt.RunAll()
+	if flare.Spec.EffectiveScope() == corev1alpha1.FlareScopeUnit {
+		if !runAll {
+			return errors.New("scope Unit needs an Astral with Terragrunt in RunAll mode")
+		}
+		if strings.Contains(flare.Spec.UnitPath, "..") || strings.HasPrefix(flare.Spec.UnitPath, "/") {
+			return fmt.Errorf("unitPath %q must stay inside the Astral path", flare.Spec.UnitPath)
+		}
+		return nil
+	}
+	// RG-Run-all blocked by a failed unit: a whole-Astral apply waits until
+	// every unit plans cleanly. Single-unit runs and plans stay possible.
+	if runAll && flare.Spec.Action.Mutates() {
+		if failed := failedUnitPaths(astral); len(failed) > 0 {
+			return fmt.Errorf("Disabled: %d unit(s) failed (%s). Fix them first",
+				len(failed), strings.Join(failed, ", "))
+		}
+	}
+	return nil
+}
+
+func failedUnitPaths(astral *corev1alpha1.Astral) []string {
+	var failed []string
+	for _, u := range astral.Status.Units {
+		if u.Result == corev1alpha1.UnitResultFailed {
+			failed = append(failed, u.Path)
+		}
+	}
+	return failed
+}
+
+// start takes the Astral's run lock and launches the Flare's next Job. The lock
+// is persisted before the Job is created: if the controller dies in between,
+// the Flare already owns the lock and the next reconcile simply creates the
+// Job, under the same deterministic name.
+func (r *FlareReconciler) start(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	astral *corev1alpha1.Astral,
+	galaxy *corev1alpha1.Galaxy,
+	allowedDestroy []string,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if !flare.HoldsLock() {
+		holder, err := r.lockHolder(ctx, flare)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: lockRetryInterval}, nil
+		if holder != "" {
+			flare.Status.Phase = corev1alpha1.FlarePhasePending
+			flare.Status.Message = "Waiting: Flare " + holder + " is already running on this Astral"
+			applyCondition(&flare.Status.Conditions, flare.Generation,
+				corev1alpha1.ConditionStarted, metav1.ConditionFalse, reasonLockBusy,
+				"A Flare is already running on this Astral: "+holder)
+			if err := r.updateStatus(ctx, flare); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: lockRetryInterval}, nil
+		}
+
+		now := metav1.Now()
+		flare.Status.LockAcquiredAt = &now
+		flare.Status.Attempt++
+		flare.Status.JobName = ""
+		flare.Status.Phase = corev1alpha1.FlarePhaseRunning
+		flare.Status.Action = flare.Spec.Action
+		if flare.Status.StartTime == nil {
+			flare.Status.StartTime = &now
+		}
+		if err := r.updateStatus(ctx, flare); err != nil {
+			// A conflict means someone else wrote first; the requeue retries
+			// against the fresh object, lock check included.
+			return ctrl.Result{}, err
+		}
 	}
 
-	if err := r.startRun(ctx, &flare, astral, galaxy); err != nil {
-		r.locks().Release(lockKey, holder)
-		return r.fail(ctx, &flare, reasonRunFailed, err)
+	job, err := r.ensureJob(ctx, flare, astral, galaxy, allowedDestroy)
+	if err != nil {
+		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseFailed, reasonRunFailed, err.Error())
 	}
+
+	flare.Status.JobName = job.Name
+	flare.Status.Step = corev1alpha1.FlareStepGitFetch
+	flare.Status.Message = "Job " + job.Name + " started"
+	applyCondition(&flare.Status.Conditions, flare.Generation,
+		corev1alpha1.ConditionStarted, metav1.ConditionTrue, reasonRunStarted,
+		fmt.Sprintf("Job %s started for action %s", job.Name, flare.Spec.Action))
+	if err := r.updateStatus(ctx, flare); err != nil {
+		return ctrl.Result{}, err
+	}
+	r.event(flare, corev1.EventTypeNormal, reasonRunStarted, "Started Job "+job.Name)
 
 	logger.Info("🔥 Flare ignited",
 		"flare", flare.Name,
 		"astral", flare.Spec.AstralRef,
-		"galaxy", flare.Spec.GalaxyRef,
 		"action", flare.Spec.Action,
-		"requestedBy", flare.Spec.RequestedBy,
+		"scope", flare.Spec.EffectiveScope(),
+		"job", job.Name,
+		"attempt", flare.Status.Attempt,
 	)
-	return ctrl.Result{RequeueAfter: runPollInterval}, nil
+	return ctrl.Result{RequeueAfter: jobPollInterval}, nil
+}
+
+// lockHolder returns the name of another Flare of the same Astral that holds
+// the run lock, or "" when it is free. It reads from the API server, not the
+// cache: the Flare controller runs a single worker under leader election, so
+// with a fresh read the check and the status write that follows cannot
+// interleave with another Flare's.
+func (r *FlareReconciler) lockHolder(ctx context.Context, flare *corev1alpha1.Flare) (string, error) {
+	var list corev1alpha1.FlareList
+	if err := r.apiReader().List(ctx, &list, client.InNamespace(flare.Namespace)); err != nil {
+		return "", fmt.Errorf("failed to list Flares for the run lock: %w", err)
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.UID == flare.UID || other.Spec.AstralRef != flare.Spec.AstralRef {
+			continue
+		}
+		if other.HoldsLock() {
+			return other.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// ensureJob creates the attempt's Job, or returns it if a previous reconcile
+// already did.
+func (r *FlareReconciler) ensureJob(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	astral *corev1alpha1.Astral,
+	galaxy *corev1alpha1.Galaxy,
+	allowedDestroy []string,
+) (*batchv1.Job, error) {
+	var existing batchv1.Job
+	key := types.NamespacedName{Namespace: flare.Namespace, Name: JobName(flare, flare.Status.Attempt)}
+	if err := r.Get(ctx, key, &existing); err == nil {
+		return &existing, nil
+	} else if !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("failed to read Job %q: %w", key.Name, err)
+	}
+
+	if r.Runner.Image == "" {
+		return nil, errors.New("the controller has no runner image configured (--runner-image)")
+	}
+	gitSecret, err := r.gitCredentials(ctx, flare, astral, galaxy)
+	if err != nil {
+		return nil, err
+	}
+	secretEnv, err := r.secretEnvNames(ctx, astral, galaxy)
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := newNonce()
+	if err != nil {
+		return nil, err
+	}
+
+	backendConfigMap := galaxy.Status.BackendConfigMap
+	job, err := buildJob(jobInputs{
+		flare:            flare,
+		astral:           astral,
+		galaxy:           galaxy,
+		request:          buildRequest(flare, astral, secretEnv, backendConfigMap != "", allowedDestroy),
+		nonce:            nonce,
+		gitSecret:        gitSecret,
+		backendConfigMap: backendConfigMap,
+	}, r.Runner)
+	if err != nil {
+		return nil, err
+	}
+	if err := controllerutil.SetControllerReference(flare, job, r.Scheme); err != nil {
+		return nil, fmt.Errorf("failed to own Job: %w", err)
+	}
+	if err := r.Create(ctx, job); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return job, nil
+		}
+		return nil, fmt.Errorf("failed to create Job %q: %w", job.Name, err)
+	}
+	return job, nil
+}
+
+// gitCredentials returns the Secret to mount as git credentials. A static
+// layout is mounted as it is. A GitHub App is exchanged here for an
+// installation token that lasts an hour, written to a Secret the Flare owns:
+// the App's private key never reaches a pod that runs repository code.
+func (r *FlareReconciler) gitCredentials(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	astral *corev1alpha1.Astral,
+	galaxy *corev1alpha1.Galaxy,
+) (string, error) {
+	ref := astral.Spec.VCSRepository.SecretRef
+	if ref == nil {
+		ref = galaxy.Spec.VCSSecretRef
+	}
+	if ref == nil {
+		return "", nil
+	}
+
+	var source corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: flare.Namespace, Name: ref.Name}, &source); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("Secret %s not found in namespace %s", ref.Name, flare.Namespace)
+		}
+		return "", fmt.Errorf("failed to read VCS credentials Secret %q: %w", ref.Name, err)
+	}
+	if !shared.IsGitHubApp(source.Data) {
+		return ref.Name, nil
+	}
+
+	token, err := shared.InstallationToken(ctx, r.HTTPClient, astral.Spec.VCSRepository.URL, source.Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to exchange the GitHub App credentials: %w", err)
+	}
+	minted := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      JobName(flare, flare.Status.Attempt) + "-git",
+			Namespace: flare.Namespace,
+			Labels:    managedLabels(flare.Spec.UniverseRef, flare.Spec.GalaxyRef, flare.Spec.AstralRef),
+		},
+	}
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, minted, func() error {
+		minted.Labels[LabelFlare] = truncateTo(flare.Name, 63)
+		minted.Type = corev1.SecretTypeOpaque
+		minted.Data = map[string][]byte{
+			shared.SecretKeyUsername: []byte(shared.GitHubAppUsername),
+			shared.SecretKeyPassword: []byte(token),
+		}
+		return controllerutil.SetControllerReference(flare, minted, r.Scheme)
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to store the installation token: %w", err)
+	}
+	return minted.Name, nil
+}
+
+// secretEnvNames lists the env vars the Job receives from Secrets, so the
+// runner can mask their values. Only key names are read here, never values.
+func (r *FlareReconciler) secretEnvNames(
+	ctx context.Context,
+	astral *corev1alpha1.Astral,
+	galaxy *corev1alpha1.Galaxy,
+) ([]string, error) {
+	var names []string
+	keysOf := func(name, prefix string) error {
+		var secret corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Namespace: astral.Namespace, Name: name}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("Secret %s not found in namespace %s", name, astral.Namespace)
+			}
+			return fmt.Errorf("failed to read Secret %q: %w", name, err)
+		}
+		for key := range secret.Data {
+			names = append(names, prefix+key)
+		}
+		return nil
+	}
+	for _, ref := range astral.Spec.Secrets {
+		if ref.Key != "" {
+			names = append(names, ref.Prefix()+ref.Key)
+			continue
+		}
+		if err := keysOf(ref.Name, ref.Prefix()); err != nil {
+			return nil, err
+		}
+	}
+	if b := galaxy.Spec.BackendConfig; b != nil && b.SecretRef != nil {
+		if err := keysOf(b.SecretRef.Name, ""); err != nil {
+			return nil, err
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
+}
+
+// observe follows a running Job: it picks up the step markers while the Job
+// runs and records the result once it finishes.
+func (r *FlareReconciler) observe(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	astral *corev1alpha1.Astral,
+	galaxy *corev1alpha1.Galaxy,
+) (ctrl.Result, error) {
+	if flare.Status.JobName == "" {
+		// The lock was persisted but the Job never was: finish starting it.
+		return r.start(ctx, flare, astral, galaxy, flare.Status.PendingDestroy)
+	}
+
+	var job batchv1.Job
+	if err := r.Get(ctx, types.NamespacedName{Namespace: flare.Namespace, Name: flare.Status.JobName}, &job); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.terminate(ctx, flare, corev1alpha1.FlarePhaseFailed, reasonJobLost,
+				"Job "+flare.Status.JobName+" was deleted before it reported a result")
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to read Job %q: %w", flare.Status.JobName, err)
+	}
+
+	finished, failedReason := jobFinished(&job)
+	step, result := r.readLog(ctx, flare, &job)
+	if step != "" && step != flare.Status.Step {
+		flare.Status.Step = step
+		if !finished {
+			if err := r.updateStatus(ctx, flare); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	if !finished {
+		return ctrl.Result{RequeueAfter: jobPollInterval}, nil
+	}
+
+	// The Job is over: the lock goes back whatever happened.
+	flare.Status.LockAcquiredAt = nil
+
+	if result == nil {
+		if failedReason == batchv1.JobReasonDeadlineExceeded {
+			return r.terminate(ctx, flare, corev1alpha1.FlarePhaseCancelled, reasonTimedOut,
+				fmt.Sprintf("Run exceeded its %ds timeout and was stopped", int64(flare.Spec.Timeout().Seconds())))
+		}
+		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseFailed, reasonRunFailed,
+			"Job "+job.Name+" finished without reporting a result; see its log")
+	}
+
+	r.recordResult(flare, result)
+	switch {
+	case failedReason == batchv1.JobReasonDeadlineExceeded:
+		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseCancelled, reasonTimedOut,
+			fmt.Sprintf("Run exceeded its %ds timeout and was stopped", int64(flare.Spec.Timeout().Seconds())))
+	case result.NeedsConfirmation:
+		return r.holdForConfirmation(ctx, flare, astral)
+	case !result.Succeeded:
+		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseFailed, reasonRunFailed, result.Message)
+	default:
+		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseSucceeded, reasonRunSucceeded, result.Message)
+	}
+}
+
+// readLog extracts the last step and the result from the runner log. A log
+// that cannot be read yet is not an error: the pod may still be pulling.
+func (r *FlareReconciler) readLog(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	job *batchv1.Job,
+) (corev1alpha1.FlareStep, *runspec.Result) {
+	if r.Logs == nil {
+		return "", nil
+	}
+	text, err := r.Logs.JobLog(ctx, job.Namespace, job.Name, logTailLines)
+	if err != nil {
+		if !errors.Is(err, ErrNoPod) {
+			log.FromContext(ctx).V(1).Info("Runner log not readable yet", "job", job.Name, "error", err.Error())
+		}
+		return "", nil
+	}
+	step, result, err := runspec.ParseLog(text, nonceFromJob(job))
+	if err != nil && !errors.Is(err, runspec.ErrNoResult) {
+		r.event(flare, corev1.EventTypeWarning, reasonRunFailed, "Unreadable runner result: "+err.Error())
+	}
+	return step, result
+}
+
+// jobFinished reports whether a Job reached a terminal condition, and the
+// failure reason if it failed.
+func jobFinished(job *batchv1.Job) (bool, string) {
+	for _, c := range job.Status.Conditions {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch c.Type {
+		case batchv1.JobComplete:
+			return true, ""
+		case batchv1.JobFailed:
+			return true, c.Reason
+		}
+	}
+	return false, ""
+}
+
+// recordResult copies the runner's report onto the status.
+func (r *FlareReconciler) recordResult(flare *corev1alpha1.Flare, result *runspec.Result) {
+	st := &flare.Status
+	st.Step = result.Step
+	st.Revision = result.Revision
+	st.PlanSummary = result.PlanSummary
+	st.ResourceChanges = result.Changes
+	st.ResourceChangesTruncated = result.ChangesTruncated
+	st.UnitResults = result.Units
+	st.Message = result.Message
+	st.Errors = result.Errors
+	st.Warnings = result.Warnings
+	st.PendingDestroy = nil
+	if result.NeedsConfirmation {
+		st.PendingDestroy = result.PendingDestroy
+	}
+
+	output := clip(result.Output, maxStatusOutput)
+	if result.Applied {
+		st.ApplyOutput = output
+	} else {
+		st.PlanOutput = output
+	}
+	if result.Applied && result.PlanSummary != nil {
+		s := result.PlanSummary
+		st.Resources = &corev1alpha1.FlareResourceCounts{
+			Created: s.ToCreate + s.ToReplace,
+			Updated: s.ToUpdate,
+			Deleted: s.ToDestroy + s.ToReplace,
+		}
+	}
+}
+
+// holdForConfirmation parks an apply whose plan destroys resources. Nothing
+// was applied; the Job is over and the lock is released, so scheduled plans go
+// on while a human decides.
+func (r *FlareReconciler) holdForConfirmation(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	astral *corev1alpha1.Astral,
+) (ctrl.Result, error) {
+	flare.Status.Phase = corev1alpha1.FlarePhaseAwaitingConfirmation
+	message := fmt.Sprintf("Apply held: the plan destroys %d resource(s). "+
+		"Set spec.confirmDestroy to %q to apply it", len(flare.Status.PendingDestroy), astral.Name)
+	flare.Status.Message = message
+	applyCondition(&flare.Status.Conditions, flare.Generation,
+		corev1alpha1.ConditionDestroyConfirmed, metav1.ConditionFalse, reasonAwaitingConfirmation, message)
+	r.event(flare, corev1.EventTypeWarning, reasonAwaitingConfirmation, message)
+	if err := r.updateStatus(ctx, flare); err != nil {
+		return ctrl.Result{}, err
+	}
+	// No requeue: the confirmation arrives as a spec update.
+	return ctrl.Result{}, nil
+}
+
+// awaitConfirmation waits for spec.confirmDestroy. Once it names the Astral, a
+// second Job runs with the confirmed resources as its allowlist: it plans
+// again and applies only if the new plan destroys nothing beyond them.
+func (r *FlareReconciler) awaitConfirmation(
+	ctx context.Context,
+	flare *corev1alpha1.Flare,
+	astral *corev1alpha1.Astral,
+	galaxy *corev1alpha1.Galaxy,
+) (ctrl.Result, error) {
+	if flare.Spec.Approved != nil && !*flare.Spec.Approved {
+		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseCancelled, reasonRejected,
+			"Destroy was rejected; nothing was applied")
+	}
+	switch flare.Spec.ConfirmDestroy {
+	case "":
+		return ctrl.Result{}, nil
+	case astral.Name:
+	default:
+		applyCondition(&flare.Status.Conditions, flare.Generation,
+			corev1alpha1.ConditionDestroyConfirmed, metav1.ConditionFalse, reasonConfirmationMismatch,
+			fmt.Sprintf("spec.confirmDestroy must be the Astral name %q", astral.Name))
+		return ctrl.Result{}, r.updateStatus(ctx, flare)
+	}
+
+	applyCondition(&flare.Status.Conditions, flare.Generation,
+		corev1alpha1.ConditionDestroyConfirmed, metav1.ConditionTrue, reasonDestroyConfirmed,
+		fmt.Sprintf("Destruction of %d resource(s) confirmed", len(flare.Status.PendingDestroy)))
+	r.event(flare, corev1.EventTypeNormal, reasonDestroyConfirmed, "Destroy confirmed; applying")
+	return r.start(ctx, flare, astral, galaxy, flare.Status.PendingDestroy)
+}
+
+// cancel stops the Job, if any, and ends the Flare. Deleting the Job kills
+// the engine mid-run; a backend state lock it held is not released, which is
+// the engine's own recovery story ("force-unlock").
+func (r *FlareReconciler) cancel(ctx context.Context, flare *corev1alpha1.Flare) (ctrl.Result, error) {
+	if flare.Status.JobName != "" {
+		job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: flare.Status.JobName, Namespace: flare.Namespace}}
+		err := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground))
+		if err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to delete Job %q: %w", job.Name, err)
+		}
+	}
+	return r.terminate(ctx, flare, corev1alpha1.FlarePhaseCancelled, reasonCancelled, "Run was cancelled")
 }
 
 // resolveTargets loads the Astral and the Galaxy this Flare runs against, and
@@ -196,7 +661,7 @@ func (r *FlareReconciler) resolveTargets(
 		}
 		return nil, nil, fmt.Errorf("failed to read Galaxy %q: %w", flare.Spec.GalaxyRef, err)
 	}
-	if galaxy.Spec.Archived {
+	if galaxy.Spec.Archived && flare.Status.Phase != corev1alpha1.FlarePhaseRunning {
 		return nil, nil, fmt.Errorf("Galaxy %q is archived", galaxy.Name)
 	}
 	if !conditionTrue(astral.Status.Conditions, corev1alpha1.ConditionConfigValid) {
@@ -241,6 +706,7 @@ func (r *FlareReconciler) awaitApproval(
 
 	flare.Status.Phase = corev1alpha1.FlarePhaseAwaitingApproval
 	flare.Status.Action = flare.Spec.Action
+	flare.Status.Message = message
 	applyCondition(&flare.Status.Conditions, flare.Generation,
 		corev1alpha1.ConditionApproved, metav1.ConditionFalse, reason, message)
 	r.event(flare, corev1.EventTypeNormal, reason, message)
@@ -248,197 +714,11 @@ func (r *FlareReconciler) awaitApproval(
 	if err := r.updateStatus(ctx, flare); err != nil {
 		return ctrl.Result{}, err
 	}
-	// No requeue: approval arrives as a spec update, which the watch delivers.
 	return ctrl.Result{}, nil
 }
 
-// startRun assembles the run request and launches it on its own goroutine.
-func (r *FlareReconciler) startRun(
-	ctx context.Context,
-	flare *corev1alpha1.Flare,
-	astral *corev1alpha1.Astral,
-	galaxy *corev1alpha1.Galaxy,
-) error {
-	credentials, err := r.vcsCredentials(ctx, astral, galaxy)
-	if err != nil {
-		return err
-	}
-	env, err := r.runEnvironment(ctx, astral, galaxy)
-	if err != nil {
-		return err
-	}
-
-	checkoutReq := shared.CheckoutRequest{
-		Key:         filepath.Join(flare.Spec.UniverseRef, flare.Spec.GalaxyRef, astral.Name),
-		URL:         astral.Spec.VCSRepository.URL,
-		Branch:      astral.Spec.VCSRepository.Branch,
-		Path:        astral.Spec.VCSRepository.Path,
-		Credentials: credentials,
-	}
-	runReq := shared.RunRequest{
-		Engine:            engineFor(galaxy),
-		Action:            shared.Action(flare.Spec.Action),
-		Workspace:         astral.Spec.WorkspaceName,
-		Parallelism:       flare.Spec.EffectiveParallelism(),
-		Lock:              astral.Spec.EnableLocking,
-		RefreshBeforePlan: flare.Spec.RefreshBeforePlan,
-		Variables:         mergedVariables(astral, flare),
-		Env:               env,
-		Hooks:             hooksFor(astral, flare.Spec.Action),
-	}
-	if flare.Spec.Action == corev1alpha1.FlareActionPlan {
-		runReq.PlanFile = "stellarcd.tfplan"
-	}
-
-	flare.Status.Phase = corev1alpha1.FlarePhaseRunning
-	flare.Status.Action = flare.Spec.Action
-	flare.Status.StartTime = ptrTime(metav1.Now())
-	applyCondition(&flare.Status.Conditions, flare.Generation,
-		corev1alpha1.ConditionStarted, metav1.ConditionTrue, reasonRunStarted,
-		"Engine run started for action "+string(flare.Spec.Action))
-	if err := r.updateStatus(ctx, flare); err != nil {
-		return err
-	}
-	r.event(flare, corev1.EventTypeNormal, reasonRunStarted, "Started "+string(flare.Spec.Action))
-
-	r.registry().Launch(flare.UID, flare.Spec.Timeout().Duration, func(runCtx context.Context) (*RunOutcome, error) {
-		return r.execute(runCtx, checkoutReq, runReq)
-	})
-	return nil
-}
-
-// execute prepares the checkout, runs the engine and collects the artifacts. It
-// runs off the reconcile goroutine, so it takes no Kubernetes objects: every
-// value it needs is already resolved into the request structs.
-func (r *FlareReconciler) execute(
-	ctx context.Context,
-	checkoutReq shared.CheckoutRequest,
-	runReq shared.RunRequest,
-) (*RunOutcome, error) {
-	checkout, err := r.workspace().Prepare(ctx, checkoutReq)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		// Credentials are shredded even when the run fails: they must not
-		// survive on disk between Flares.
-		_ = r.workspace().Cleanup(checkout)
-	}()
-
-	runReq.WorkDir = checkout.ModuleDir
-	if runReq.Env == nil {
-		runReq.Env = map[string]string{}
-	}
-	maps.Copy(runReq.Env, checkout.Env)
-
-	result, runErr := r.executor().Run(ctx, runReq)
-	outcome := &RunOutcome{Revision: checkout.Revision, Result: result}
-	if runReq.PlanFile != "" && result != nil && runErr == nil {
-		outcome.PlanArtifact = readArtifact(filepath.Join(checkout.ModuleDir, runReq.PlanFile))
-	}
-	return outcome, runErr
-}
-
-// observeRun folds a finished run into the status, or keeps waiting.
-func (r *FlareReconciler) observeRun(
-	ctx context.Context,
-	flare *corev1alpha1.Flare,
-	run *Run,
-) (ctrl.Result, error) {
-	if flare.Spec.Cancel && !run.Cancelled() {
-		run.Cancel()
-		r.event(flare, corev1.EventTypeWarning, reasonCancelled, "Cancellation requested; aborting the engine run")
-		return ctrl.Result{RequeueAfter: runPollInterval}, nil
-	}
-	if !run.Done() {
-		return ctrl.Result{RequeueAfter: runPollInterval}, nil
-	}
-
-	outcome, runErr := run.Result()
-	r.registry().Forget(flare.UID)
-	r.locks().Release(StateLockKey(flare), string(flare.UID))
-
-	if outcome != nil && outcome.Result != nil {
-		r.recordResult(flare, outcome)
-	}
-
-	switch {
-	case run.TimedOut():
-		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseCancelled, reasonTimedOut,
-			fmt.Sprintf("Run exceeded its %ds timeout and was killed", flare.Spec.TimeoutSeconds))
-	case run.Cancelled():
-		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseCancelled, reasonCancelled,
-			"Run was cancelled")
-	case runErr != nil:
-		return r.terminate(ctx, flare, corev1alpha1.FlarePhaseFailed, reasonRunFailed, runErr.Error())
-	}
-
-	if err := r.storeArtifacts(ctx, flare, outcome); err != nil {
-		// Losing the plan file is not worth failing a successful apply over.
-		flare.Status.Warnings = append(flare.Status.Warnings, err.Error())
-	}
-	return r.terminate(ctx, flare, corev1alpha1.FlarePhaseSucceeded, reasonRunSucceeded,
-		"Engine run completed for action "+string(flare.Spec.Action))
-}
-
-// recordResult copies the engine output onto the status, truncated to keep the
-// object small enough for etcd.
-func (r *FlareReconciler) recordResult(flare *corev1alpha1.Flare, outcome *RunOutcome) {
-	result := outcome.Result
-	summary := clip(result.Output, maxStatusOutput)
-	if flare.Spec.Action.Mutates() {
-		flare.Status.ApplyOutput = summary
-	} else {
-		flare.Status.PlanOutput = summary
-	}
-
-	flare.Status.Resources = &corev1alpha1.FlareResourceCounts{
-		Created:   result.Counts.Created,
-		Updated:   result.Counts.Updated,
-		Deleted:   result.Counts.Deleted,
-		Unchanged: result.Counts.Unchanged,
-	}
-	flare.Status.Errors = result.Errors
-	flare.Status.Warnings = result.Warnings
-}
-
-// storeArtifacts writes the binary plan into a Secret owned by the Flare. A
-// plan file carries the same secrets as a state file, so a ConfigMap would be
-// the wrong home for it.
-func (r *FlareReconciler) storeArtifacts(
-	ctx context.Context,
-	flare *corev1alpha1.Flare,
-	outcome *RunOutcome,
-) error {
-	if outcome == nil || len(outcome.PlanArtifact) == 0 {
-		return nil
-	}
-	if len(outcome.PlanArtifact) > maxArtifactBytes {
-		return fmt.Errorf("plan file is %d bytes, above the %d byte artifact limit; it was not stored",
-			len(outcome.PlanArtifact), maxArtifactBytes)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      truncateName(flare.Name) + "-plan",
-			Namespace: flare.Namespace,
-		},
-	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		secret.Labels = managedLabels(flare.Spec.UniverseRef, flare.Spec.GalaxyRef, flare.Spec.AstralRef)
-		secret.Type = corev1.SecretTypeOpaque
-		secret.Data = map[string][]byte{"tfplan": outcome.PlanArtifact}
-		return controllerutil.SetControllerReference(flare, secret, r.Scheme)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to store plan artifact: %w", err)
-	}
-
-	flare.Status.Artifacts = &corev1alpha1.FlareArtifacts{PlanFile: secret.Name}
-	return nil
-}
-
-// terminate writes the final phase and stops the reconcile loop for this Flare.
+// terminate writes the final phase, releases the lock and stops the reconcile
+// loop for this Flare.
 func (r *FlareReconciler) terminate(
 	ctx context.Context,
 	flare *corev1alpha1.Flare,
@@ -449,6 +729,8 @@ func (r *FlareReconciler) terminate(
 
 	flare.Status.Phase = phase
 	flare.Status.Action = flare.Spec.Action
+	flare.Status.LockAcquiredAt = nil
+	flare.Status.Message = message
 	flare.Status.CompletionTime = ptrTime(metav1.Now())
 	if flare.Status.StartTime != nil {
 		elapsed := flare.Status.CompletionTime.Sub(flare.Status.StartTime.Time)
@@ -470,6 +752,7 @@ func (r *FlareReconciler) terminate(
 		"astral", flare.Spec.AstralRef,
 		"action", flare.Spec.Action,
 		"phase", phase,
+		"revision", flare.Status.Revision,
 		"duration", flare.Status.Duration,
 	)
 
@@ -479,112 +762,18 @@ func (r *FlareReconciler) terminate(
 	return ctrl.Result{}, nil
 }
 
-// finalize aborts a live run before letting the Flare go, so a delete cannot
-// leave an orphaned terraform process holding the remote state lock.
+// finalize lets a deleted Flare go. Its Job and minted Secret are owned by it
+// and garbage-collected; the finalizer is only removed from Flares created by
+// earlier versions, which added one to wait for an in-process run.
 func (r *FlareReconciler) finalize(ctx context.Context, flare *corev1alpha1.Flare) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	if !controllerutil.ContainsFinalizer(flare, corev1alpha1.FlareFinalizer) {
 		return ctrl.Result{}, nil
 	}
-
-	if run := r.registry().Get(flare.UID); run != nil {
-		if !run.Done() {
-			run.Cancel()
-			logger.V(1).Info("Aborting engine run before Flare deletion", "flare", flare.Name)
-			return ctrl.Result{RequeueAfter: runPollInterval}, nil
-		}
-		r.registry().Forget(flare.UID)
-	}
-	r.locks().Release(StateLockKey(flare), string(flare.UID))
-
 	controllerutil.RemoveFinalizer(flare, corev1alpha1.FlareFinalizer)
 	if err := r.Update(ctx, flare); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove Flare finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
-}
-
-// vcsCredentials resolves the clone credentials, preferring the Astral's own
-// Secret over the Galaxy default.
-func (r *FlareReconciler) vcsCredentials(
-	ctx context.Context,
-	astral *corev1alpha1.Astral,
-	galaxy *corev1alpha1.Galaxy,
-) (map[string][]byte, error) {
-	ref := astral.Spec.VCSRepository.SecretRef
-	if ref == nil {
-		ref = galaxy.Spec.VCSSecretRef
-	}
-	if ref == nil {
-		return nil, nil
-	}
-
-	var secret corev1.Secret
-	key := types.NamespacedName{Namespace: astral.Namespace, Name: ref.Name}
-	if err := r.Get(ctx, key, &secret); err != nil {
-		return nil, fmt.Errorf("failed to read VCS credentials Secret %q: %w", ref.Name, err)
-	}
-	return secret.Data, nil
-}
-
-// runEnvironment builds the engine environment: the backend credentials, the
-// Astral's projected Secrets and the minimum a subprocess needs. The manager's
-// own environment is deliberately not inherited, so the ServiceAccount token
-// never reaches a provider plugin.
-func (r *FlareReconciler) runEnvironment(
-	ctx context.Context,
-	astral *corev1alpha1.Astral,
-	galaxy *corev1alpha1.Galaxy,
-) (map[string]string, error) {
-	env := map[string]string{
-		"PATH":             os.Getenv("PATH"),
-		"HOME":             os.Getenv("HOME"),
-		"TF_IN_AUTOMATION": "1",
-		"TF_INPUT":         "0",
-	}
-
-	if galaxy.Spec.BackendConfig != nil && galaxy.Spec.BackendConfig.SecretRef != nil {
-		// Backend credentials keep their own key names: providers look for
-		// AWS_ACCESS_KEY_ID and friends verbatim.
-		if err := r.projectSecret(ctx, astral.Namespace,
-			corev1alpha1.EnvSecretRef{Name: galaxy.Spec.BackendConfig.SecretRef.Name}, env); err != nil {
-			return nil, err
-		}
-	}
-	for _, ref := range astral.Spec.Secrets {
-		if err := r.projectSecret(ctx, astral.Namespace, ref, env); err != nil {
-			return nil, err
-		}
-	}
-	return env, nil
-}
-
-// projectSecret copies Secret entries into the environment map under the
-// requested prefix.
-func (r *FlareReconciler) projectSecret(
-	ctx context.Context,
-	namespace string,
-	ref corev1alpha1.EnvSecretRef,
-	env map[string]string,
-) error {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
-		return fmt.Errorf("failed to read Secret %q: %w", ref.Name, err)
-	}
-
-	if ref.Key != "" {
-		value, ok := secret.Data[ref.Key]
-		if !ok {
-			return fmt.Errorf("Secret %q has no key %q", ref.Name, ref.Key)
-		}
-		env[ref.EnvPrefix+ref.Key] = string(value)
-		return nil
-	}
-	for key, value := range secret.Data {
-		env[ref.EnvPrefix+key] = string(value)
-	}
-	return nil
 }
 
 // mergedVariables layers the Flare overrides on top of the Astral defaults.
@@ -593,46 +782,6 @@ func mergedVariables(astral *corev1alpha1.Astral, flare *corev1alpha1.Flare) map
 	maps.Copy(merged, astral.Spec.Variables)
 	maps.Copy(merged, flare.Spec.Variables)
 	return merged
-}
-
-// hooksFor selects the hook pair matching the action.
-func hooksFor(astral *corev1alpha1.Astral, action corev1alpha1.FlareAction) shared.Hooks {
-	if astral.Spec.CustomHooks == nil {
-		return shared.Hooks{}
-	}
-	hooks := astral.Spec.CustomHooks
-	if action.Mutates() {
-		return shared.Hooks{Pre: hooks.PreApply, Post: hooks.PostApply}
-	}
-	return shared.Hooks{Pre: hooks.PrePlan, Post: hooks.PostPlan}
-}
-
-// engineFor maps the Galaxy engine onto the executor engine.
-func engineFor(galaxy *corev1alpha1.Galaxy) shared.Engine {
-	switch galaxy.Spec.Terrarium.Engine {
-	case corev1alpha1.TerrariumEngineOpenTofu:
-		return shared.EngineOpenTofu
-	case corev1alpha1.TerrariumEngineTerragrunt:
-		return shared.EngineTerragrunt
-	default:
-		return shared.EngineTerraform
-	}
-}
-
-// StateLockKey identifies the remote state a Flare will touch. Two Flares that
-// share it must never run at the same time.
-func StateLockKey(flare *corev1alpha1.Flare) string {
-	return strings.Join([]string{flare.Namespace, flare.Spec.GalaxyRef, flare.Spec.AstralRef}, "/")
-}
-
-// readArtifact loads a produced artifact, returning nil when it is absent or
-// unreadable: a missing plan file is a warning, not a failed run.
-func readArtifact(path string) []byte {
-	data, err := os.ReadFile(path) // #nosec G304 -- path is built from a validated module directory
-	if err != nil {
-		return nil
-	}
-	return data
 }
 
 // clip truncates a blob, keeping the tail where engine failures are reported.
@@ -645,13 +794,8 @@ func clip(text string, limit int) string {
 
 // appendUnique adds msg unless it is already present.
 func appendUnique(list []string, msg string) []string {
-	if msg == "" {
+	if msg == "" || slices.Contains(list, msg) {
 		return list
-	}
-	for _, existing := range list {
-		if existing == msg {
-			return list
-		}
 	}
 	return append(list, msg)
 }
@@ -662,7 +806,10 @@ func (r *FlareReconciler) fail(
 	reason string,
 	cause error,
 ) (ctrl.Result, error) {
-	flare.Status.Phase = corev1alpha1.FlarePhasePending
+	if flare.Status.Phase == "" {
+		flare.Status.Phase = corev1alpha1.FlarePhasePending
+	}
+	flare.Status.Message = cause.Error()
 	applyCondition(&flare.Status.Conditions, flare.Generation,
 		corev1alpha1.ConditionStarted, metav1.ConditionFalse, reason, cause.Error())
 	r.event(flare, corev1.EventTypeWarning, reason, cause.Error())
@@ -688,60 +835,24 @@ func (r *FlareReconciler) event(flare *corev1alpha1.Flare, eventType, reason, me
 	r.Recorder.Event(flare, eventType, reason, message)
 }
 
-func (r *FlareReconciler) executor() shared.Executor {
-	if r.Executor != nil {
-		return r.Executor
+func (r *FlareReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
 	}
-	return shared.NewCommandExecutor()
+	return r.Client
 }
 
-func (r *FlareReconciler) workspace() shared.WorkspaceProvider {
-	if r.Workspace != nil {
-		return r.Workspace
-	}
-	return shared.NewGitWorkspace(DefaultWorkspaceRoot)
-}
-
-func (r *FlareReconciler) locks() *shared.StateLock {
-	if r.Locks == nil {
-		r.Locks = shared.NewStateLock()
-	}
-	return r.Locks
-}
-
-func (r *FlareReconciler) registry() *RunRegistry {
-	if r.Runs == nil {
-		r.Runs = NewRunRegistry()
-	}
-	return r.Runs
-}
-
-// DefaultWorkspaceRoot is where checkouts land when no root is configured.
-const DefaultWorkspaceRoot = "/var/lib/stellarcd/workspaces"
-
-// SetupWithManager wires the Flare controller. Defaults are filled in here so a
-// zero-value reconciler is still usable, e.g. from tests.
+// SetupWithManager wires the Flare controller. It runs a single worker: the
+// run lock relies on two Flares never being reconciled at the same time.
 func (r *FlareReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if r.Locks == nil {
-		r.Locks = shared.NewStateLock()
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
-	if r.Runs == nil {
-		r.Runs = NewRunRegistry()
-	}
-	if r.Executor == nil {
-		r.Executor = shared.NewCommandExecutor()
-	}
-	if r.Workspace == nil {
-		r.Workspace = shared.NewGitWorkspace(DefaultWorkspaceRoot)
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Flare{}).
+		Owns(&batchv1.Job{}).
 		Owns(&corev1.Secret{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Named("flare").
 		Complete(r)
 }
-
-// errRunLost is returned when a registry entry finishes without a result, which
-// can only happen if the run goroutine panicked.
-var errRunLost = errors.New("engine run produced no result")

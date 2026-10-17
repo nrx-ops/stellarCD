@@ -154,7 +154,6 @@ func (r *GalaxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	logger.Info("🌠 Galaxy reconciled",
 		"galaxy", galaxy.Name,
 		"universe", galaxy.Spec.UniverseRef,
-		"engine", galaxy.Spec.Terrarium.Engine,
 		"phase", galaxy.Status.Phase,
 		"astrals", galaxy.Status.AstralCount,
 	)

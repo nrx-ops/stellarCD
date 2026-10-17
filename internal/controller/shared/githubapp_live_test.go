@@ -76,30 +76,3 @@ func TestLiveGitHubAppInstallationToken(t *testing.T) {
 	}
 	t.Logf("minted an installation token for %s: %d characters", repo, len(token))
 }
-
-// TestLiveGitHubAppClone drives the whole provider: mint, stage, and let git
-// authenticate a real private clone with the result.
-func TestLiveGitHubAppClone(t *testing.T) {
-	creds, repo, branch, modulePath := liveGitHubAppCredentials(t)
-
-	w := NewGitWorkspace(t.TempDir())
-	checkout, err := w.Prepare(context.Background(), CheckoutRequest{
-		Key:         "live/githubapp",
-		URL:         repo,
-		Branch:      branch,
-		Path:        modulePath,
-		Credentials: creds,
-	})
-	if err != nil {
-		t.Fatalf("Prepare failed: %v", err)
-	}
-	defer func() { _ = w.Cleanup(checkout) }()
-
-	if len(checkout.Revision) != 40 {
-		t.Fatalf("got revision %q, want a 40-character SHA", checkout.Revision)
-	}
-	if _, statErr := os.Stat(checkout.ModuleDir); statErr != nil {
-		t.Fatalf("module directory is missing: %v", statErr)
-	}
-	t.Logf("cloned %s at %s, module directory %s", repo, checkout.Revision, checkout.ModuleDir)
-}

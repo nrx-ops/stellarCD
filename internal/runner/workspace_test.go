@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package shared
+package runner
 
 import (
 	"context"
@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nrx-ops/stellarCD/internal/controller/shared"
 )
 
 // TestPrepareClonesIntoAnEmptyDirectory is a regression test. Credential files
@@ -64,7 +66,7 @@ func TestPrepareClonesIntoAnEmptyDirectory(t *testing.T) {
 		URL:         "https://github.com/4sh/cinng-iac",
 		Branch:      "main",
 		Path:        ".",
-		Credentials: map[string][]byte{SecretKeyToken: []byte("ghp_example")},
+		Credentials: map[string][]byte{shared.SecretKeyToken: []byte("ghp_example")},
 	})
 	if err != nil {
 		t.Fatalf("Prepare failed: %v", err)

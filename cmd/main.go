@@ -28,9 +28,11 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -71,6 +73,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var showVersion bool
+	var runnerImage, runnerPullPolicy string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -92,6 +95,10 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit.")
+	flag.StringVar(&runnerImage, "runner-image", "",
+		"Image of the Jobs that execute Flares: the stellarCD runner, git, Terraform, OpenTofu and Terragrunt.")
+	flag.StringVar(&runnerPullPolicy, "runner-image-pull-policy", string(corev1.PullIfNotPresent),
+		"Pull policy of the runner image.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -254,20 +261,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The run registry is built here rather than left to the Flare controller's
-	// own defaulting so it can be registered as a Runnable: that is what makes
-	// SIGTERM abort live engine processes and wait for them to exit, instead of
-	// the manager returning while terraform is still writing state.
-	runs := controller.NewRunRegistry()
-	if err := mgr.Add(runs); err != nil {
-		setupLog.Error(err, "Failed to register the engine run registry")
+	// Flares run in Jobs: the manager never executes an engine, so a SIGTERM
+	// stops it without touching a running apply. The next leader finds the
+	// Job again through its Flare.
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to build the Kubernetes clientset for runner logs")
 		os.Exit(1)
 	}
+	if runnerImage == "" {
+		setupLog.Info("No --runner-image set: Flares will fail until one is configured")
+	}
 	if err := (&controller.FlareReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("flare-controller"),
-		Runs:     runs,
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorderFor("flare-controller"),
+		APIReader: mgr.GetAPIReader(),
+		Logs:      &controller.ClientsetLogReader{Clientset: clientset},
+		Runner: controller.RunnerConfig{
+			Image:      runnerImage,
+			PullPolicy: corev1.PullPolicy(runnerPullPolicy),
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Flare")
 		os.Exit(1)

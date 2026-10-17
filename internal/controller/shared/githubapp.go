@@ -151,6 +151,24 @@ func (a *githubAppAuthenticator) installationToken(
 	return a.mintToken(ctx, target, installationID, assertion)
 }
 
+// InstallationToken exchanges GitHub App credentials for an installation
+// access token scoped to the repository behind cloneURL. The token lasts about
+// an hour; callers mint one per use rather than caching it.
+func InstallationToken(
+	ctx context.Context,
+	client *http.Client,
+	cloneURL string,
+	creds map[string][]byte,
+) (string, error) {
+	auth := &githubAppAuthenticator{client: client}
+	return auth.installationToken(ctx, cloneURL, creds)
+}
+
+// IsGitHubApp reports whether a credentials Secret carries a GitHub App.
+func IsGitHubApp(creds map[string][]byte) bool {
+	return hasGitHubAppCredentials(creds)
+}
+
 // parseGitHubRepoURL splits a clone URL into its owner/repo pair and the API
 // base serving it. github.com is served by api.github.com; any other host is
 // treated as GitHub Enterprise Server, whose API lives under /api/v3.

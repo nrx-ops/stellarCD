@@ -53,10 +53,6 @@ spec:
   # Set once here, inherited by every Astral in this Galaxy.
   vcsSecretRef:
     name: github-4sh
-  terrarium:
-    # The repository is driven by Terragrunt: 616 terragrunt.hcl units against
-    # 122 raw .tf files, and there is no root module at the repository root.
-    engine: Terragrunt
   approvalPolicy: RequiresReview
 ---
 apiVersion: core.stellarcd.io/v1alpha1
@@ -89,6 +85,18 @@ spec:
     # This one is deliberately in test: it is the cheapest place to find out
     # whether the credentials, the backend and the engine version all line up.
     path: terragrunt/environments/test/apps/ACCESSHUB/k8s-namespace
+  # The repository is driven by Terragrunt: 616 terragrunt.hcl units against
+  # 122 raw .tf files. Terragrunt is a wrapper, so the engine underneath is set
+  # on its own. OpenTofu is inferred, not declared: root.hcl sets no
+  # terraform_binary (Terragrunt 1.x then runs tofu) and the repository ships
+  # an OpenTofu registry cleaner script.
+  engine: OpenTofu
+  terragrunt:
+    enabled: true
+    mode: Unit
+  # root.hcl generates a GCS backend (bucket cinng-terraform) and the units use
+  # Vault providers: a Flare needs GCP and Vault credentials in spec.secrets,
+  # with envPrefix "" so they keep their own names, before init can succeed.
   workspaceName: default
   enableLocking: true
   # planOnPR and applyOnMerge are recorded on the spec but no code reads them:

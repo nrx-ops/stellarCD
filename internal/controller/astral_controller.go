@@ -45,21 +45,9 @@ import (
 const DefaultAstralRequeue = 2 * time.Minute
 
 // DefaultDriftInterval is used when drift detection is on but no interval is set.
+// Each check is a Plan Flare: only a plan compares the code with real
+// infrastructure, which is what syncStatus reports.
 const DefaultDriftInterval = time.Hour
-
-// AnnotationSourceFlare links a chained Flare back to the Flare that triggered
-// it. It is what makes auto-apply idempotent: the Astral refuses to raise a
-// second Apply for a plan it has already chained.
-const AnnotationSourceFlare = "core.stellarcd.io/source-flare"
-
-// AnnotationTrigger records why a Flare was created.
-const AnnotationTrigger = "core.stellarcd.io/trigger"
-
-// Trigger values written to AnnotationTrigger.
-const (
-	triggerDriftDetection = "drift-detection"
-	triggerAutoApply      = "auto-apply"
-)
 
 // maxNameLength bounds a generated Flare name, leaving room for the suffix.
 const maxNameLength = 200
@@ -76,6 +64,7 @@ const (
 	reasonFlareRunning       = "FlareRunning"
 	reasonFlareChainCreated  = "AutoApplyChained"
 	reasonDriftFlareCreated  = "DriftCheckScheduled"
+	reasonAutoApplyBlocked   = "AutoApplyBlocked"
 	reasonLastFlareSucceeded = "LastFlareSucceeded"
 	reasonLastFlareFailed    = "LastFlareFailed"
 )
@@ -143,7 +132,6 @@ func (r *AstralReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.fail(ctx, &astral, corev1alpha1.ConditionDependenciesReady, reasonReconcileFailed, err)
 	}
 	if len(pending) > 0 {
-		astral.Status.Phase = corev1alpha1.AstralPhasePending
 		applyCondition(&astral.Status.Conditions, astral.Generation,
 			corev1alpha1.ConditionDependenciesReady, metav1.ConditionFalse, reasonDependenciesUnmet,
 			"Waiting for Astrals: "+strings.Join(pending, ", "))
@@ -157,22 +145,25 @@ func (r *AstralReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// second run onto a live one is exactly the concurrent-apply hazard the
 	// per-state lock exists to prevent.
 	requeue := r.requeue()
+	blocked := ""
 	if active == nil && len(pending) == 0 && !galaxy.Spec.Archived {
-		next, err := r.orchestrate(ctx, &astral, flares)
+		next, why, err := r.orchestrate(ctx, &astral, flares)
 		if err != nil {
 			return r.fail(ctx, &astral, corev1alpha1.ConditionReconciled, reasonReconcileFailed, err)
 		}
+		blocked = why
 		if next > 0 && next < requeue {
 			requeue = next
 		}
 	}
 
-	r.markPhase(&astral, active, pending)
+	r.markSync(&astral, active, pending, flares, blocked)
 
 	logger.Info("✨ Astral reconciled",
 		"astral", astral.Name,
 		"galaxy", astral.Spec.GalaxyRef,
-		"phase", astral.Status.Phase,
+		"sync", astral.Status.SyncStatus,
+		"activeFlare", astral.Status.ActiveFlare,
 		"drift", astral.Status.Drift != nil && astral.Status.Drift.Detected,
 		"lastSuccessfulFlare", astral.Status.LastSuccessfulFlare,
 	)
@@ -254,6 +245,9 @@ func (r *AstralReconciler) validate(
 			"or the Galaxy's spec.vcsSecretRef", repo.URL)
 	}
 
+	if tg := astral.Spec.Terragrunt; tg != nil && len(tg.ExcludedUnits) > 0 && !tg.RunAll() {
+		return errors.New("spec.terragrunt.excludedUnits only applies to Terragrunt in RunAll mode")
+	}
 	for _, ref := range astral.Spec.Secrets {
 		if err := checkSecret(ctx, r.Client, astral.Namespace, ref.Name); err != nil {
 			return err
@@ -294,26 +288,26 @@ func (r *AstralReconciler) listFlares(
 }
 
 // observeFlares folds the Flare population into the Astral status and returns
-// the one currently running, if any.
+// the Flare holding the run lock, if any. Flares arrive newest first.
 func (r *AstralReconciler) observeFlares(
 	astral *corev1alpha1.Astral,
 	flares []corev1alpha1.Flare,
 ) *corev1alpha1.Flare {
 	var active *corev1alpha1.Flare
 	history := make([]corev1alpha1.FlareRef, 0, corev1alpha1.MaxFlareHistory)
-	lastSuccessful := ""
+	lastSuccessful, lastRef := "", ""
 	var lastStatus corev1alpha1.FlarePhase
 
 	for i := range flares {
 		flare := &flares[i]
+		if flare.HoldsLock() && active == nil {
+			active = flare
+		}
 		if !flare.Status.Phase.IsTerminal() {
-			if active == nil && flare.Status.Phase == corev1alpha1.FlarePhaseRunning {
-				active = flare
-			}
 			continue
 		}
-		if lastStatus == "" {
-			lastStatus = flare.Status.Phase
+		if lastRef == "" {
+			lastRef, lastStatus = flare.Name, flare.Status.Phase
 		}
 		if lastSuccessful == "" && flare.Status.Phase == corev1alpha1.FlarePhaseSucceeded {
 			lastSuccessful = flare.Name
@@ -326,59 +320,203 @@ func (r *AstralReconciler) observeFlares(
 				CompletionTime: flare.Status.CompletionTime,
 			})
 		}
-		r.foldDrift(astral, flare)
-		r.foldInfrastructure(astral, flare)
 	}
 
 	astral.Status.FlareHistory = history
 	astral.Status.LastSuccessfulFlare = lastSuccessful
 	astral.Status.LastFlareStatus = lastStatus
+	astral.Status.LastFlareRef = lastRef
+	astral.Status.ActiveFlare = ""
+	if active != nil {
+		astral.Status.ActiveFlare = active.Name
+	}
+
+	r.foldSync(astral, flares)
+	r.foldInfrastructure(astral, flares)
 	return active
 }
 
-// foldDrift updates the drift status from a finished Refresh Flare. Only the
-// most recent one matters, and flares arrive newest first.
-func (r *AstralReconciler) foldDrift(astral *corev1alpha1.Astral, flare *corev1alpha1.Flare) {
-	if flare.Spec.Action != corev1alpha1.FlareActionRefresh ||
-		flare.Status.Phase != corev1alpha1.FlarePhaseSucceeded {
-		return
-	}
-	if astral.Status.Drift != nil && astral.Status.Drift.LastChecked != nil &&
-		!flare.Status.CompletionTime.Time.After(astral.Status.Drift.LastChecked.Time) {
-		return
-	}
-
-	drifted := hasChanges(flare.Status.Resources)
-	drift := &corev1alpha1.DriftStatus{Detected: drifted, LastChecked: flare.Status.CompletionTime}
-	if drifted {
-		drift.LastDetected = flare.Status.CompletionTime
-	} else if astral.Status.Drift != nil {
-		drift.LastDetected = astral.Status.Drift.LastDetected
-	}
-	astral.Status.Drift = drift
+// informative reports whether a Flare says something about alignment with the
+// code: a successful run, or an apply held for confirmation, whose plan is
+// just as current. A failed or cancelled run says nothing either way.
+func informative(flare *corev1alpha1.Flare) bool {
+	return flare.Status.Phase == corev1alpha1.FlarePhaseSucceeded ||
+		flare.Status.Phase == corev1alpha1.FlarePhaseAwaitingConfirmation
 }
 
-// foldInfrastructure refreshes the resource census from the newest Flare that
-// reported one.
-func (r *AstralReconciler) foldInfrastructure(astral *corev1alpha1.Astral, flare *corev1alpha1.Flare) {
-	if astral.Status.Infrastructure != nil || flare.Status.Resources == nil {
-		return
-	}
-	if flare.Status.Phase != corev1alpha1.FlarePhaseSucceeded {
-		return
-	}
-	counts := flare.Status.Resources
-	astral.Status.Infrastructure = &corev1alpha1.InfrastructureStatus{
-		ResourceCount: counts.Unchanged + counts.Created + counts.Updated,
+// flareSync is the alignment a single informative Flare reports.
+func flareSync(flare *corev1alpha1.Flare, summary *corev1alpha1.PlanSummary) corev1alpha1.SyncStatus {
+	switch {
+	case flare.Status.Phase == corev1alpha1.FlarePhaseAwaitingConfirmation:
+		return corev1alpha1.SyncStatusOutOfSync
+	case flare.Spec.Action == corev1alpha1.FlareActionApply:
+		return corev1alpha1.SyncStatusSynced
+	case flare.Spec.Action == corev1alpha1.FlareActionDestroy:
+		// The code still declares what was just destroyed.
+		return corev1alpha1.SyncStatusOutOfSync
+	case summary.HasChanges():
+		return corev1alpha1.SyncStatusOutOfSync
+	default:
+		return corev1alpha1.SyncStatusSynced
 	}
 }
 
-// hasChanges reports whether a Flare reported a non-empty delta.
-func hasChanges(counts *corev1alpha1.FlareResourceCounts) bool {
-	return counts != nil && (counts.Created > 0 || counts.Updated > 0 || counts.Deleted > 0)
+// observedAt is when a Flare's plan was taken.
+func observedAt(flare *corev1alpha1.Flare) *metav1.Time {
+	if flare.Status.CompletionTime != nil {
+		return flare.Status.CompletionTime
+	}
+	t := flare.CreationTimestamp
+	return &t
 }
 
-// dependenciesReady returns the names of the dependencies that are not Ready.
+// foldSync derives syncStatus, the drift counts, the units and the last synced
+// revision from the Flares, newest first.
+//
+// In RunAll mode each unit keeps the newest thing any Flare said about it,
+// whole-stack or unit-scoped, and the Astral takes the worst unit status.
+// Otherwise the newest informative whole-Astral Flare decides.
+func (r *AstralReconciler) foldSync(astral *corev1alpha1.Astral, flares []corev1alpha1.Flare) {
+	runAll := astral.Spec.Terragrunt.RunAll()
+	var previous *corev1alpha1.DriftStatus
+	if astral.Status.Drift != nil {
+		previous = astral.Status.Drift.DeepCopy()
+	}
+
+	sync := corev1alpha1.SyncStatusUnknown
+	var summary corev1alpha1.PlanSummary
+	var checked *metav1.Time
+	units := map[string]corev1alpha1.UnitStatus{}
+	decided := false
+
+	for i := range flares {
+		flare := &flares[i]
+		if !flare.Status.Phase.IsTerminal() && flare.Status.Phase != corev1alpha1.FlarePhaseAwaitingConfirmation {
+			continue
+		}
+		if runAll {
+			foldUnits(units, flare)
+			if checked == nil && informative(flare) {
+				checked = observedAt(flare)
+			}
+			continue
+		}
+		if decided || flare.Spec.EffectiveScope() != corev1alpha1.FlareScopeAll || !informative(flare) {
+			continue
+		}
+		decided = true
+		sync = flareSync(flare, flare.Status.PlanSummary)
+		if sync == corev1alpha1.SyncStatusOutOfSync {
+			summary.Add(flare.Status.PlanSummary)
+		}
+		checked = observedAt(flare)
+	}
+
+	if runAll {
+		// The fold starts from Synced, the best status, and each unit can only
+		// make it worse. With no unit observed yet nothing is known.
+		sync = corev1alpha1.SyncStatusUnknown
+		if len(units) > 0 {
+			sync = corev1alpha1.SyncStatusSynced
+		}
+		astral.Status.Units = make([]corev1alpha1.UnitStatus, 0, len(units))
+		for _, path := range slices.Sorted(maps.Keys(units)) {
+			unit := units[path]
+			sync = sync.Worse(unit.SyncStatus)
+			if unit.SyncStatus == corev1alpha1.SyncStatusOutOfSync {
+				summary.Add(unit.Drift)
+			}
+			astral.Status.Units = append(astral.Status.Units, unit)
+		}
+	} else {
+		astral.Status.Units = nil
+	}
+	astral.Status.SyncStatus = sync
+
+	if checked != nil {
+		drift := &corev1alpha1.DriftStatus{
+			Detected:    sync == corev1alpha1.SyncStatusOutOfSync,
+			PlanSummary: summary,
+			LastChecked: checked,
+		}
+		if drift.Detected {
+			drift.LastDetected = checked
+		} else if previous != nil {
+			drift.LastDetected = previous.LastDetected
+		}
+		astral.Status.Drift = drift
+	}
+
+	for i := range flares {
+		flare := &flares[i]
+		if flare.Spec.Action == corev1alpha1.FlareActionApply &&
+			flare.Spec.EffectiveScope() == corev1alpha1.FlareScopeAll &&
+			flare.Status.Phase == corev1alpha1.FlarePhaseSucceeded {
+			astral.Status.LastSyncedRevision = flare.Status.Revision
+			astral.Status.LastSyncTime = flare.Status.CompletionTime
+			break
+		}
+	}
+}
+
+// foldUnits records what one Flare says about each unit, keeping only the
+// newest word per unit. An excluded unit was not looked at, so an older
+// observation of it still stands.
+func foldUnits(units map[string]corev1alpha1.UnitStatus, flare *corev1alpha1.Flare) {
+	record := func(path string, result corev1alpha1.UnitResult, summary *corev1alpha1.PlanSummary, msg string) {
+		if _, seen := units[path]; seen {
+			return
+		}
+		unit := corev1alpha1.UnitStatus{
+			Path:       path,
+			Result:     result,
+			LastFlare:  flare.Name,
+			Message:    msg,
+			SyncStatus: corev1alpha1.SyncStatusUnknown,
+		}
+		if result == corev1alpha1.UnitResultSucceeded {
+			unit.SyncStatus = flareSync(flare, summary)
+			if unit.SyncStatus == corev1alpha1.SyncStatusOutOfSync && summary != nil {
+				unit.Drift = summary.DeepCopy()
+			}
+		}
+		units[path] = unit
+	}
+
+	if flare.Spec.EffectiveScope() == corev1alpha1.FlareScopeUnit {
+		switch {
+		case informative(flare):
+			record(flare.Spec.UnitPath, corev1alpha1.UnitResultSucceeded, flare.Status.PlanSummary, "")
+		case flare.Status.Phase == corev1alpha1.FlarePhaseFailed:
+			record(flare.Spec.UnitPath, corev1alpha1.UnitResultFailed, nil, flare.Status.Message)
+		}
+		return
+	}
+	for _, u := range flare.Status.UnitResults {
+		if u.Result == corev1alpha1.UnitResultExcluded {
+			continue
+		}
+		record(u.Path, u.Result, u.PlanSummary, u.Message)
+	}
+}
+
+// foldInfrastructure refreshes the resource census from the newest successful
+// apply.
+func (r *AstralReconciler) foldInfrastructure(astral *corev1alpha1.Astral, flares []corev1alpha1.Flare) {
+	for i := range flares {
+		flare := &flares[i]
+		if flare.Status.Phase != corev1alpha1.FlarePhaseSucceeded || flare.Status.Resources == nil {
+			continue
+		}
+		counts := flare.Status.Resources
+		astral.Status.Infrastructure = &corev1alpha1.InfrastructureStatus{
+			ResourceCount: counts.Unchanged + counts.Created + counts.Updated,
+		}
+		return
+	}
+}
+
+// dependenciesReady returns the names of the dependencies that are not Synced.
 func (r *AstralReconciler) dependenciesReady(
 	ctx context.Context,
 	astral *corev1alpha1.Astral,
@@ -394,7 +532,7 @@ func (r *AstralReconciler) dependenciesReady(
 			}
 			return nil, fmt.Errorf("failed to read dependency %q: %w", name, err)
 		}
-		if dependency.Status.Phase != corev1alpha1.AstralPhaseReady {
+		if dependency.Status.SyncStatus != corev1alpha1.SyncStatusSynced {
 			pending = append(pending, name)
 		}
 	}
@@ -402,33 +540,41 @@ func (r *AstralReconciler) dependenciesReady(
 }
 
 // orchestrate raises the Flares the Astral owes: an auto-apply chained onto a
-// non-empty plan, and the periodic drift check. It returns the delay after
-// which the next drift check is due, or zero when drift detection is off.
+// plan that found changes, and the periodic check. It returns the delay until
+// the next check is due, and why auto-apply was held back, if it was.
 func (r *AstralReconciler) orchestrate(
 	ctx context.Context,
 	astral *corev1alpha1.Astral,
 	flares []corev1alpha1.Flare,
-) (time.Duration, error) {
-	if err := r.chainAutoApply(ctx, astral, flares); err != nil {
-		return 0, err
+) (time.Duration, string, error) {
+	blocked, err := r.chainAutoApply(ctx, astral, flares)
+	if err != nil {
+		return 0, "", err
 	}
-	return r.scheduleDriftCheck(ctx, astral, flares)
+	next, err := r.scheduleDriftCheck(ctx, astral, flares)
+	return next, blocked, err
 }
 
-// chainAutoApply raises an Apply for the newest successful Plan that produced
-// changes and has not been chained yet.
+// chainAutoApply raises an Apply for the newest successful Plan that found
+// changes and has not been chained yet. It holds back, and says why, when the
+// plan destroys resources or a unit is failing: both need a person.
 func (r *AstralReconciler) chainAutoApply(
 	ctx context.Context,
 	astral *corev1alpha1.Astral,
 	flares []corev1alpha1.Flare,
-) error {
+) (string, error) {
 	if !astral.Spec.AutoApply {
-		return nil
+		return "", nil
 	}
-
 	source := newestChainablePlan(flares)
 	if source == nil {
-		return nil
+		return "", nil
+	}
+	if source.Status.PlanSummary.Destroys() > 0 {
+		return "Auto-apply blocked: the plan destroys resources.", nil
+	}
+	if astral.Spec.Terragrunt.RunAll() && len(failedUnitPaths(astral)) > 0 {
+		return "Auto-apply blocked: a unit failed.", nil
 	}
 
 	apply := &corev1alpha1.Flare{
@@ -436,40 +582,39 @@ func (r *AstralReconciler) chainAutoApply(
 			Name:      truncateName(source.Name) + "-apply",
 			Namespace: astral.Namespace,
 			Labels:    managedLabels(astral.Spec.UniverseRef, astral.Spec.GalaxyRef, astral.Name),
-			Annotations: map[string]string{
-				AnnotationSourceFlare: source.Name,
-				AnnotationTrigger:     triggerAutoApply,
-			},
 		},
 		Spec: corev1alpha1.FlareSpec{
 			UniverseRef: astral.Spec.UniverseRef,
 			GalaxyRef:   astral.Spec.GalaxyRef,
 			AstralRef:   astral.Name,
 			Action:      corev1alpha1.FlareActionApply,
+			Scope:       corev1alpha1.FlareScopeAll,
+			Trigger:     corev1alpha1.FlareTriggerDrift,
+			PlanRef:     source.Name,
+			// Apply what was planned, not whatever the branch moved to since.
+			Revision:    source.Status.Revision,
 			Variables:   source.Spec.Variables,
 			RequestedBy: source.Spec.RequestedBy,
 			Parallelism: source.Spec.EffectiveParallelism(),
 		},
 	}
 	if err := controllerutil.SetControllerReference(astral, apply, r.Scheme); err != nil {
-		return fmt.Errorf("failed to own chained Flare: %w", err)
+		return "", fmt.Errorf("failed to own chained Flare: %w", err)
 	}
-
 	if err := r.Create(ctx, apply); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("failed to chain auto-apply Flare: %w", err)
+		return "", fmt.Errorf("failed to chain auto-apply Flare: %w", err)
 	}
 	r.event(astral, corev1.EventTypeNormal, reasonFlareChainCreated,
 		"Chained Apply Flare "+apply.Name+" from plan "+source.Name)
-	return nil
+	return "", nil
 }
 
-// newestChainablePlan returns the most recent successful Plan with a non-empty
-// delta, or nil when the newest terminal Flare is not such a plan. Looking only
-// at the newest one is deliberate: an older plan is stale, and re-applying it
-// would fight whatever ran after it.
+// newestChainablePlan returns the most recent successful whole-Astral Plan
+// with changes, or nil when the newest terminal Flare is not such a plan. An
+// older plan is stale, and applying it would fight whatever ran after it.
 func newestChainablePlan(flares []corev1alpha1.Flare) *corev1alpha1.Flare {
 	for i := range flares {
 		flare := &flares[i]
@@ -477,8 +622,9 @@ func newestChainablePlan(flares []corev1alpha1.Flare) *corev1alpha1.Flare {
 			continue
 		}
 		if flare.Spec.Action != corev1alpha1.FlareActionPlan ||
+			flare.Spec.EffectiveScope() != corev1alpha1.FlareScopeAll ||
 			flare.Status.Phase != corev1alpha1.FlarePhaseSucceeded ||
-			!hasChanges(flare.Status.Resources) {
+			!flare.Status.PlanSummary.HasChanges() {
 			return nil
 		}
 		if alreadyChained(flares, flare.Name) {
@@ -489,14 +635,14 @@ func newestChainablePlan(flares []corev1alpha1.Flare) *corev1alpha1.Flare {
 	return nil
 }
 
-// alreadyChained reports whether some Flare already descends from source.
+// alreadyChained reports whether some Flare already follows source.
 func alreadyChained(flares []corev1alpha1.Flare, source string) bool {
 	return slices.ContainsFunc(flares, func(f corev1alpha1.Flare) bool {
-		return f.Annotations[AnnotationSourceFlare] == source
+		return f.Spec.PlanRef == source
 	})
 }
 
-// scheduleDriftCheck raises a Refresh Flare when the drift window has elapsed,
+// scheduleDriftCheck raises a Plan Flare when the check window has elapsed,
 // and returns the delay until the next one is due.
 func (r *AstralReconciler) scheduleDriftCheck(
 	ctx context.Context,
@@ -514,113 +660,123 @@ func (r *AstralReconciler) scheduleDriftCheck(
 		return interval - now.Sub(last), nil
 	}
 
-	// The name buckets the timestamp by the drift window, so a status write
-	// that never lands cannot make the controller raise two checks in one window.
+	// The name buckets the timestamp by the window, so a status write that
+	// never lands cannot make the controller raise two checks in one window.
 	window := now.Unix() / int64(interval.Seconds())
-	refresh := &corev1alpha1.Flare{
+	check := &corev1alpha1.Flare{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        fmt.Sprintf("%s-drift-%d", truncateName(astral.Name), window),
-			Namespace:   astral.Namespace,
-			Labels:      managedLabels(astral.Spec.UniverseRef, astral.Spec.GalaxyRef, astral.Name),
-			Annotations: map[string]string{AnnotationTrigger: triggerDriftDetection},
+			Name:      fmt.Sprintf("%s-check-%d", truncateName(astral.Name), window),
+			Namespace: astral.Namespace,
+			Labels:    managedLabels(astral.Spec.UniverseRef, astral.Spec.GalaxyRef, astral.Name),
 		},
 		Spec: corev1alpha1.FlareSpec{
-			UniverseRef: astral.Spec.UniverseRef,
-			GalaxyRef:   astral.Spec.GalaxyRef,
-			AstralRef:   astral.Name,
-			Action:      corev1alpha1.FlareActionRefresh,
-			AutoApprove: true,
-			Parallelism: corev1alpha1.DefaultFlareParallelism,
+			UniverseRef:       astral.Spec.UniverseRef,
+			GalaxyRef:         astral.Spec.GalaxyRef,
+			AstralRef:         astral.Name,
+			Action:            corev1alpha1.FlareActionPlan,
+			Scope:             corev1alpha1.FlareScopeAll,
+			Trigger:           corev1alpha1.FlareTriggerSchedule,
+			AutoApprove:       true,
+			RefreshBeforePlan: true,
+			Parallelism:       corev1alpha1.DefaultFlareParallelism,
 		},
 	}
-	if err := controllerutil.SetControllerReference(astral, refresh, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(astral, check, r.Scheme); err != nil {
 		return 0, fmt.Errorf("failed to own drift Flare: %w", err)
 	}
-
-	if err := r.Create(ctx, refresh); err != nil {
+	if err := r.Create(ctx, check); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return interval, nil
 		}
 		return 0, fmt.Errorf("failed to schedule drift check: %w", err)
 	}
 	r.event(astral, corev1.EventTypeNormal, reasonDriftFlareCreated,
-		"Scheduled drift check Flare "+refresh.Name)
+		"Scheduled drift check Flare "+check.Name)
 	return interval, nil
 }
 
-// lastDriftCheck returns when drift was last checked, preferring the status and
-// falling back to the newest Refresh Flare so a lost status write only costs
-// one extra check.
+// lastDriftCheck returns when alignment was last checked, preferring the
+// status and falling back to the newest scheduled Flare so a lost status
+// write only costs one extra check.
 func lastDriftCheck(astral *corev1alpha1.Astral, flares []corev1alpha1.Flare) time.Time {
 	if astral.Status.Drift != nil && astral.Status.Drift.LastChecked != nil {
 		return astral.Status.Drift.LastChecked.Time
 	}
 	for i := range flares {
-		if flares[i].Spec.Action == corev1alpha1.FlareActionRefresh {
+		if flares[i].Spec.Trigger == corev1alpha1.FlareTriggerSchedule {
 			return flares[i].CreationTimestamp.Time
 		}
 	}
 	return time.Time{}
 }
 
-// markPhase derives the coarse phase and the drift condition.
-func (r *AstralReconciler) markPhase(
+// markSync writes the DriftFree and Reconciled conditions. Progress is read
+// from activeFlare and alignment from syncStatus; these conditions carry the
+// explanations that go with them.
+func (r *AstralReconciler) markSync(
 	astral *corev1alpha1.Astral,
 	active *corev1alpha1.Flare,
 	pending []string,
+	flares []corev1alpha1.Flare,
+	autoApplyBlocked string,
 ) {
-	switch {
-	case active != nil && active.Spec.Action.Mutates():
-		astral.Status.Phase = corev1alpha1.AstralPhaseApplying
-	case active != nil:
-		astral.Status.Phase = corev1alpha1.AstralPhasePlanning
-	case len(pending) > 0:
-		astral.Status.Phase = corev1alpha1.AstralPhasePending
-	case astral.Status.Drift != nil && astral.Status.Drift.Detected:
-		astral.Status.Phase = corev1alpha1.AstralPhaseDrifted
-	case astral.Status.LastFlareStatus == corev1alpha1.FlarePhaseFailed:
-		astral.Status.Phase = corev1alpha1.AstralPhaseFailed
-	default:
-		astral.Status.Phase = corev1alpha1.AstralPhaseReady
-	}
-
-	switch {
-	case astral.Status.Drift == nil:
-		applyCondition(&astral.Status.Conditions, astral.Generation,
-			corev1alpha1.ConditionDriftFree, metav1.ConditionUnknown, reasonDriftUnknown,
-			"No drift check has completed yet")
-	case astral.Status.Drift.Detected:
-		applyCondition(&astral.Status.Conditions, astral.Generation,
-			corev1alpha1.ConditionDriftFree, metav1.ConditionFalse, reasonDriftDetected,
-			"Real infrastructure diverges from the tracked revision")
-	default:
+	switch astral.Status.SyncStatus {
+	case corev1alpha1.SyncStatusSynced:
 		applyCondition(&astral.Status.Conditions, astral.Generation,
 			corev1alpha1.ConditionDriftFree, metav1.ConditionTrue, reasonDriftFree,
-			"Last refresh found no drift")
+			"The last plan found nothing to change")
+	case corev1alpha1.SyncStatusOutOfSync:
+		reason, message := reasonDriftDetected, "Real infrastructure diverges from the tracked revision"
+		if astral.Status.Drift != nil {
+			message += ": " + describeSummary(&astral.Status.Drift.PlanSummary)
+		}
+		if autoApplyBlocked != "" {
+			reason, message = reasonAutoApplyBlocked, autoApplyBlocked
+		}
+		applyCondition(&astral.Status.Conditions, astral.Generation,
+			corev1alpha1.ConditionDriftFree, metav1.ConditionFalse, reason, message)
+	default:
+		applyCondition(&astral.Status.Conditions, astral.Generation,
+			corev1alpha1.ConditionDriftFree, metav1.ConditionUnknown, reasonDriftUnknown,
+			"No plan has succeeded yet")
 	}
 
-	reason, message := reasonReconciled, "Astral is ready"
-	status := metav1.ConditionTrue
-	switch astral.Status.Phase {
-	case corev1alpha1.AstralPhaseFailed:
-		status, reason, message = metav1.ConditionFalse, reasonLastFlareFailed, "The last Flare failed"
-	case corev1alpha1.AstralPhaseDrifted:
-		reason, message = reasonDriftDetected, "Astral is drifting"
-	case corev1alpha1.AstralPhasePending:
+	status, reason, message := metav1.ConditionTrue, reasonReconciled, "Astral is ready"
+	switch {
+	case active != nil:
+		reason, message = reasonFlareRunning, "Flare "+active.Name+" is running against this Astral"
+	case len(pending) > 0:
 		status, reason, message = metav1.ConditionFalse, reasonDependenciesUnmet, "Astral is waiting on dependencies"
-	case corev1alpha1.AstralPhasePlanning, corev1alpha1.AstralPhaseApplying:
-		reason, message = reasonFlareRunning, "A Flare is running against this Astral"
-	case corev1alpha1.AstralPhaseReady:
-		if astral.Status.LastFlareStatus == corev1alpha1.FlarePhaseSucceeded {
-			reason = reasonLastFlareSucceeded
+	case astral.Status.LastFlareStatus == corev1alpha1.FlarePhaseFailed:
+		status, reason = metav1.ConditionFalse, reasonLastFlareFailed
+		message = "The last Flare failed"
+		if f := findFlare(flares, astral.Status.LastFlareRef); f != nil && f.Status.Message != "" {
+			message += ": " + f.Status.Message
 		}
+	case astral.Status.LastFlareStatus == corev1alpha1.FlarePhaseSucceeded:
+		reason = reasonLastFlareSucceeded
 	}
 	applyCondition(&astral.Status.Conditions, astral.Generation,
 		corev1alpha1.ConditionReconciled, status, reason, message)
 }
 
-// finalize holds the Astral until its Flares are reclaimed, so a delete never
-// races a live engine process.
+func findFlare(flares []corev1alpha1.Flare, name string) *corev1alpha1.Flare {
+	for i := range flares {
+		if flares[i].Name == name {
+			return &flares[i]
+		}
+	}
+	return nil
+}
+
+// describeSummary renders plan counts for a condition message.
+func describeSummary(s *corev1alpha1.PlanSummary) string {
+	return fmt.Sprintf("%d to create, %d to update, %d to destroy, %d to replace",
+		s.ToCreate, s.ToUpdate, s.ToDestroy, s.ToReplace)
+}
+
+// finalize holds the Astral while one of its Flares has a live Job, so a
+// delete never kills an apply halfway.
 func (r *AstralReconciler) finalize(ctx context.Context, astral *corev1alpha1.Astral) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -632,8 +788,11 @@ func (r *AstralReconciler) finalize(ctx context.Context, astral *corev1alpha1.As
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	// Only a Flare with a live Job holds the Astral back: killing an apply
+	// halfway would strand the backend state lock. Flares waiting for a human
+	// have no Job and go with the Astral through their owner reference.
 	for i := range flares {
-		if !flares[i].Status.Phase.IsTerminal() {
+		if flares[i].HoldsLock() {
 			logger.V(1).Info("Waiting for a running Flare before releasing Astral",
 				"astral", astral.Name, "flare", flares[i].Name)
 			return ctrl.Result{RequeueAfter: galaxyDrainRequeue}, nil
@@ -654,7 +813,6 @@ func (r *AstralReconciler) fail(
 	condType, reason string,
 	cause error,
 ) (ctrl.Result, error) {
-	astral.Status.Phase = corev1alpha1.AstralPhaseFailed
 	applyCondition(&astral.Status.Conditions, astral.Generation,
 		condType, metav1.ConditionFalse, reason, cause.Error())
 	applyCondition(&astral.Status.Conditions, astral.Generation,

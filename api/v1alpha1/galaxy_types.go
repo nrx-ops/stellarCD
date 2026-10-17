@@ -48,9 +48,9 @@ const (
 
 // GalaxySpec defines the desired state of a Galaxy.
 //
-// A Galaxy groups Astrals that share a team, a VCS provider, an engine version
-// and a state backend. It is the level at which credentials and approval rules
-// are set once and inherited downwards.
+// A Galaxy groups Astrals that share a team, a VCS provider and a state
+// backend. It is the level at which credentials and approval rules are set once
+// and inherited downwards. The engine is set on each Astral.
 type GalaxySpec struct {
 	// UniverseRef is the name of the owning Universe. It is immutable: moving a
 	// Galaxy between tenants would move its namespace too.
@@ -85,9 +85,6 @@ type GalaxySpec struct {
 	// the Astrals of this Galaxy.
 	// +optional
 	VCSSecretRef *SecretRef `json:"vcsSecretRef,omitempty"`
-	// Terrarium pins the engine and version used across the Galaxy.
-	// +optional
-	Terrarium TerrariumSpec `json:"terrarium,omitempty"`
 	// BackendConfig describes the remote state backend shared by the Astrals.
 	// +optional
 	BackendConfig *BackendConfig `json:"backendConfig,omitempty"`
@@ -163,6 +160,19 @@ type DiscoverySpec struct {
 
 // DiscoveredAstralTemplate is stamped onto every Astral discovery creates.
 type DiscoveredAstralTemplate struct {
+	// Engine is the engine discovered Astrals run.
+	// +kubebuilder:default=Terraform
+	// +optional
+	Engine Engine `json:"engine,omitempty"`
+	// EngineVersion pins the engine version on discovered Astrals.
+	// +kubebuilder:validation:Pattern=`^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$`
+	// +optional
+	EngineVersion string `json:"engineVersion,omitempty"`
+	// Terragrunt configures Terragrunt on discovered Astrals. It also decides
+	// what discovery looks for: a terragrunt.hcl per unit when enabled, a
+	// directory of .tf files otherwise.
+	// +optional
+	Terragrunt *TerragruntSpec `json:"terragrunt,omitempty"`
 	// AutoApply lets a successful Plan chain into an Apply.
 	// +kubebuilder:default=false
 	// +optional
@@ -247,7 +257,6 @@ func (s *GalaxySpec) RequiresApproval(action FlareAction) bool {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=gal;galaxies
 // +kubebuilder:printcolumn:name="Universe",type=string,JSONPath=`.spec.universeRef`
-// +kubebuilder:printcolumn:name="Engine",type=string,JSONPath=`.spec.terrarium.engine`
 // +kubebuilder:printcolumn:name="Approval",type=string,JSONPath=`.spec.approvalPolicy`
 // +kubebuilder:printcolumn:name="Astrals",type=integer,JSONPath=`.status.astralCount`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

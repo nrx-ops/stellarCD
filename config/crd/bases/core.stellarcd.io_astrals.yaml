@@ -27,12 +27,15 @@ spec:
     - jsonPath: .spec.vcsRepository.path
       name: Path
       type: string
-    - jsonPath: .status.phase
-      name: Phase
+    - jsonPath: .status.syncStatus
+      name: Sync
       type: string
-    - jsonPath: .status.drift.detected
-      name: Drift
-      type: boolean
+    - jsonPath: .status.drift.toDestroy
+      name: Destroy
+      type: integer
+    - jsonPath: .status.activeFlare
+      name: Active
+      type: string
     - jsonPath: .status.lastSuccessfulFlare
       name: Last Flare
       type: string
@@ -107,7 +110,7 @@ spec:
                 type: object
               dependsOn:
                 description: |-
-                  DependsOn lists Astral names in the same namespace that must be Ready
+                  DependsOn lists Astral names in the same namespace that must be Synced
                   before this one may run. Cycles are rejected by the validating webhook.
                 items:
                   type: string
@@ -122,7 +125,9 @@ spec:
                 maxLength: 128
                 type: string
               driftDetection:
-                description: DriftDetection configures the periodic Refresh Flares.
+                description: |-
+                  DriftDetection configures the periodic Plan Flares that keep syncStatus
+                  and the drift counts current.
                 properties:
                   enabled:
                     default: false
@@ -136,9 +141,25 @@ spec:
               enableLocking:
                 default: true
                 description: |-
-                  EnableLocking serialises runs against this Astral's state. Turning it off
-                  risks state corruption and is only safe for read-only modules.
+                  EnableLocking passes -lock to the engine, so it takes the backend state
+                  lock. It does not affect stellarCD's own rule of one active Flare per
+                  Astral, which always applies. Turning it off is only safe for read-only
+                  modules.
                 type: boolean
+              engine:
+                default: Terraform
+                description: Engine is the binary that runs init, plan and apply and
+                  owns the state.
+                enum:
+                - Terraform
+                - OpenTofu
+                type: string
+              engineVersion:
+                description: |-
+                  EngineVersion is the exact engine version, e.g. "1.16.6". Empty means the
+                  version the runner image ships; a mismatch fails the Flare before init.
+                pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
+                type: string
               galaxyRef:
                 description: |-
                   GalaxyRef is the name of the owning Galaxy, resolved in the same
@@ -164,7 +185,10 @@ spec:
                       default: TF_VAR_
                       description: |-
                         EnvPrefix is prepended to each projected key to build the environment
-                        variable name. Terraform reads inputs from TF_VAR_<name>.
+                        variable name. Terraform reads inputs from TF_VAR_<name>, hence the
+                        default. Set it to "" for cloud credentials, which providers read under
+                        their own names (AWS_ACCESS_KEY_ID, GOOGLE_CREDENTIALS, ...). It is a
+                        pointer so that "" can be told apart from "not set".
                       type: string
                     key:
                       description: |-
@@ -180,12 +204,36 @@ spec:
                   - name
                   type: object
                 type: array
-              terraformVersion:
-                description: |-
-                  TerraformVersion overrides the Galaxy engine version for this project.
-                  The engine itself is fixed by the Galaxy.
-                pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
-                type: string
+              terragrunt:
+                description: Terragrunt puts Terragrunt in front of the engine.
+                properties:
+                  enabled:
+                    default: false
+                    description: Enabled routes every command through Terragrunt.
+                    type: boolean
+                  excludedUnits:
+                    description: |-
+                      ExcludedUnits are skipped by whole-Astral runs in RunAll mode, typically
+                      a unit that is broken and being fixed. Paths are relative to the Astral
+                      path. They are never inherited.
+                    items:
+                      type: string
+                    type: array
+                  mode:
+                    default: Unit
+                    description: Mode selects a single unit or every unit below the
+                      path.
+                    enum:
+                    - Unit
+                    - RunAll
+                    type: string
+                  version:
+                    description: |-
+                      Version is the exact Terragrunt version, e.g. "1.1.6". Empty means the
+                      version the runner image ships; a mismatch fails the Flare before init.
+                    pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
+                    type: string
+                type: object
               universeRef:
                 description: UniverseRef is the name of the owning Universe. Immutable.
                 maxLength: 253
@@ -253,6 +301,10 @@ spec:
           status:
             description: AstralStatus reports the observed state of an Astral.
             properties:
+              activeFlare:
+                description: ActiveFlare is the Flare currently running against this
+                  Astral, if any.
+                type: string
               conditions:
                 description: Conditions holds the machine-readable state.
                 items:
@@ -314,7 +366,7 @@ spec:
                 - type
                 x-kubernetes-list-type: map
               drift:
-                description: Drift records the outcome of the last drift check.
+                description: Drift records the outcome of the last plan.
                 properties:
                   detected:
                     description: Detected is true while real infrastructure diverges
@@ -329,6 +381,24 @@ spec:
                     description: LastDetected is when drift was last observed.
                     format: date-time
                     type: string
+                  toCreate:
+                    description: ToCreate is the number of resources the plan adds.
+                    format: int32
+                    type: integer
+                  toDestroy:
+                    description: ToDestroy is the number of resources the plan deletes
+                      outright.
+                    format: int32
+                    type: integer
+                  toReplace:
+                    description: ToReplace is the number of resources deleted and
+                      recreated.
+                    format: int32
+                    type: integer
+                  toUpdate:
+                    description: ToUpdate is the number of resources changed in place.
+                    format: int32
+                    type: integer
                 type: object
               flareHistory:
                 description: FlareHistory keeps the most recent finished Flares, newest
@@ -376,6 +446,10 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              lastFlareRef:
+                description: LastFlareRef is the most recent Flare that reached a
+                  terminal phase.
+                type: string
               lastFlareStatus:
                 description: LastFlareStatus is the terminal phase of the most recent
                   Flare.
@@ -388,13 +462,94 @@ spec:
                 description: LastSuccessfulFlare is the name of the last Flare that
                   succeeded.
                 type: string
+              lastSyncTime:
+                description: LastSyncTime is when that apply finished.
+                format: date-time
+                type: string
+              lastSyncedRevision:
+                description: LastSyncedRevision is the commit last applied successfully
+                  to the whole Astral.
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the spec generation last processed.
                 format: int64
                 type: integer
-              phase:
-                description: Phase is a coarse summary of the project state.
+              syncStatus:
+                description: |-
+                  SyncStatus says whether real infrastructure matches the tracked revision.
+                  It replaces the former phase, which mixed what is running with what the
+                  result is: progress is now read from activeFlare, failures from the
+                  Reconciled condition and lastFlareStatus. In RunAll mode it is the worst
+                  status among the units.
+                enum:
+                - Synced
+                - OutOfSync
+                - Unknown
                 type: string
+              units:
+                description: Units is the per-unit view, in RunAll mode only.
+                items:
+                  description: UnitStatus is the per-unit view of a RunAll Astral.
+                  properties:
+                    drift:
+                      description: Drift is what the last plan would change in this
+                        unit.
+                      properties:
+                        toCreate:
+                          description: ToCreate is the number of resources the plan
+                            adds.
+                          format: int32
+                          type: integer
+                        toDestroy:
+                          description: ToDestroy is the number of resources the plan
+                            deletes outright.
+                          format: int32
+                          type: integer
+                        toReplace:
+                          description: ToReplace is the number of resources deleted
+                            and recreated.
+                          format: int32
+                          type: integer
+                        toUpdate:
+                          description: ToUpdate is the number of resources changed
+                            in place.
+                          format: int32
+                          type: integer
+                      type: object
+                    lastFlare:
+                      description: LastFlare is the last Flare that ran this unit.
+                      type: string
+                    message:
+                      description: Message explains a failed or skipped unit.
+                      type: string
+                    path:
+                      description: Path is the unit directory, relative to the Astral
+                        path.
+                      type: string
+                    result:
+                      description: Result is the outcome of the last Flare that ran
+                        this unit.
+                      enum:
+                      - Succeeded
+                      - Failed
+                      - Skipped
+                      - Excluded
+                      type: string
+                    syncStatus:
+                      description: SyncStatus is the unit's own alignment with the
+                        tracked revision.
+                      enum:
+                      - Synced
+                      - OutOfSync
+                      - Unknown
+                      type: string
+                  required:
+                  - path
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - path
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

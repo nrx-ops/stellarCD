@@ -97,7 +97,17 @@ func (r *GalaxyReconciler) discover(ctx context.Context, galaxy *corev1alpha1.Ga
 		return fmt.Errorf("failed to list %s: %w", spec.Repository.URL, err)
 	}
 
-	engine := string(galaxy.Spec.Terrarium.Engine)
+	// With Terragrunt a module is a unit, marked by its terragrunt.hcl;
+	// without it, a directory of .tf files.
+	engine := string(corev1alpha1.EngineTerraform)
+	if tmpl := spec.Template; tmpl != nil {
+		if tmpl.Engine != "" {
+			engine = string(tmpl.Engine)
+		}
+		if tmpl.Terragrunt != nil && tmpl.Terragrunt.Enabled {
+			engine = "Terragrunt"
+		}
+	}
 	modules := shared.DetectModules(tree.Files, engine)
 	result := discoveryResult{found: len(modules), truncated: tree.Truncated}
 
@@ -301,6 +311,17 @@ func (r *GalaxyReconciler) upsertDiscoveredAstral(
 		astral.Spec.EnableLocking = true
 
 		if spec.Template != nil {
+			astral.Spec.Engine = spec.Template.Engine
+			astral.Spec.EngineVersion = spec.Template.EngineVersion
+			if tg := spec.Template.Terragrunt; tg != nil {
+				// A discovered Astral is one unit: RunAll over a single unit
+				// would only add a layer of reporting.
+				astral.Spec.Terragrunt = &corev1alpha1.TerragruntSpec{
+					Enabled: tg.Enabled,
+					Version: tg.Version,
+					Mode:    corev1alpha1.TerragruntModeUnit,
+				}
+			}
 			astral.Spec.AutoApply = spec.Template.AutoApply
 			astral.Spec.PlanOnPR = spec.Template.PlanOnPR
 			astral.Spec.ApplyOnMerge = spec.Template.ApplyOnMerge

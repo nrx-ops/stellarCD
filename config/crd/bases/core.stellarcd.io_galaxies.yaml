@@ -21,9 +21,6 @@ spec:
     - jsonPath: .spec.universeRef
       name: Universe
       type: string
-    - jsonPath: .spec.terrarium.engine
-      name: Engine
-      type: string
     - jsonPath: .spec.approvalPolicy
       name: Approval
       type: string
@@ -64,9 +61,9 @@ spec:
             description: |-
               GalaxySpec defines the desired state of a Galaxy.
 
-              A Galaxy groups Astrals that share a team, a VCS provider, an engine version
-              and a state backend. It is the level at which credentials and approval rules
-              are set once and inherited downwards.
+              A Galaxy groups Astrals that share a team, a VCS provider and a state
+              backend. It is the level at which credentials and approval rules are set once
+              and inherited downwards. The engine is set on each Astral.
             properties:
               approvalPolicy:
                 default: RequiresReview
@@ -271,6 +268,18 @@ spec:
                             description: Interval is the delay between two drift checks.
                             type: string
                         type: object
+                      engine:
+                        default: Terraform
+                        description: Engine is the engine discovered Astrals run.
+                        enum:
+                        - Terraform
+                        - OpenTofu
+                        type: string
+                      engineVersion:
+                        description: EngineVersion pins the engine version on discovered
+                          Astrals.
+                        pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
+                        type: string
                       labels:
                         additionalProperties:
                           type: string
@@ -281,6 +290,39 @@ spec:
                         description: PlanOnPR raises a Plan Flare when a pull request
                           touches the module.
                         type: boolean
+                      terragrunt:
+                        description: |-
+                          Terragrunt configures Terragrunt on discovered Astrals. It also decides
+                          what discovery looks for: a terragrunt.hcl per unit when enabled, a
+                          directory of .tf files otherwise.
+                        properties:
+                          enabled:
+                            default: false
+                            description: Enabled routes every command through Terragrunt.
+                            type: boolean
+                          excludedUnits:
+                            description: |-
+                              ExcludedUnits are skipped by whole-Astral runs in RunAll mode, typically
+                              a unit that is broken and being fixed. Paths are relative to the Astral
+                              path. They are never inherited.
+                            items:
+                              type: string
+                            type: array
+                          mode:
+                            default: Unit
+                            description: Mode selects a single unit or every unit
+                              below the path.
+                            enum:
+                            - Unit
+                            - RunAll
+                            type: string
+                          version:
+                            description: |-
+                              Version is the exact Terragrunt version, e.g. "1.1.6". Empty means the
+                              version the runner image ships; a mismatch fails the Flare before init.
+                            pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
+                            type: string
+                        type: object
                     type: object
                 required:
                 - repository
@@ -300,25 +342,6 @@ spec:
                   in this Galaxy.
                 pattern: ^$|^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$
                 type: string
-              terrarium:
-                description: Terrarium pins the engine and version used across the
-                  Galaxy.
-                properties:
-                  engine:
-                    default: Terraform
-                    description: Engine is the binary invoked to plan and apply infrastructure.
-                    enum:
-                    - Terraform
-                    - OpenTofu
-                    - Terragrunt
-                    type: string
-                  version:
-                    description: |-
-                      Version is the exact engine version, e.g. "1.9.5". An empty value means
-                      "whatever version the runner image ships".
-                    pattern: ^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$
-                    type: string
-                type: object
               universeRef:
                 description: |-
                   UniverseRef is the name of the owning Universe. It is immutable: moving a

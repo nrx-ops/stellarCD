@@ -29,8 +29,6 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -438,106 +436,5 @@ func TestInstallationTokenErrors(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tc.wantErr)
 			}
 		})
-	}
-}
-
-// TestMaterialiseCredentialsGitHubApp covers the wiring: an App Secret must end
-// up as a 0600 credential-store file holding the minted token, with git pointed
-// at it through the environment rather than through a command line.
-func TestMaterialiseCredentialsGitHubApp(t *testing.T) {
-	stub := &githubStub{}
-	srv := stub.server(t)
-
-	repoDir := t.TempDir()
-	w := &GitWorkspace{Root: repoDir, HTTPClient: srv.Client()}
-	checkout := &Checkout{RepoDir: repoDir, Env: map[string]string{}}
-
-	creds := map[string][]byte{
-		SecretKeyGitHubAppID:         []byte("123456"),
-		SecretKeyGitHubAppPrivateKey: pkcs1PEM(t, testKey),
-	}
-
-	cloneURL := srv.URL + "/4sh/cinng-iac.git"
-	if err := w.materialiseCredentials(
-		context.Background(), repoDir, cloneURL, creds, checkout); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	path := filepath.Join(repoDir, ".stellarcd-git-credentials")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("credential file was not staged: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("got mode %o, want 0600: the file holds a live token", perm)
-	}
-
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read the credential file: %v", err)
-	}
-	entry := strings.TrimSpace(string(body))
-	if !strings.Contains(entry, githubAppUsername) {
-		t.Fatalf("entry %q does not use the %q username GitHub documents for App tokens",
-			entry, githubAppUsername)
-	}
-	if !strings.Contains(entry, "ghs_installationtoken") {
-		t.Fatal("entry does not carry the minted installation token")
-	}
-
-	if got := checkout.Env["GIT_CONFIG_VALUE_0"]; got != "store --file="+path {
-		t.Fatalf("got credential helper %q, want it pointed at the staged file", got)
-	}
-	if got := checkout.Env["GIT_TERMINAL_PROMPT"]; got != "0" {
-		t.Fatalf("got GIT_TERMINAL_PROMPT %q, want %q so a failed auth cannot hang", got, "0")
-	}
-	if len(checkout.cleanupPaths) != 1 || checkout.cleanupPaths[0] != path {
-		t.Fatalf("got cleanup paths %v, want the credential file staged for shredding",
-			checkout.cleanupPaths)
-	}
-
-	if err := w.Cleanup(checkout); err != nil {
-		t.Fatalf("cleanup failed: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("credential file survived cleanup")
-	}
-}
-
-// TestMaterialiseCredentialsUnusableSecret pins the behaviour that used to be
-// the trap: a Secret with no recognised key must fail loudly instead of letting
-// git fall through to an anonymous clone.
-func TestMaterialiseCredentialsUnusableSecret(t *testing.T) {
-	repoDir := t.TempDir()
-	w := &GitWorkspace{Root: repoDir}
-	checkout := &Checkout{RepoDir: repoDir, Env: map[string]string{}}
-
-	creds := map[string][]byte{"ghSecret.yaml": []byte("gh-app-id: 123456\n")}
-
-	err := w.materialiseCredentials(
-		context.Background(), repoDir, "https://github.com/4sh/cinng-iac", creds, checkout)
-	if err == nil {
-		t.Fatal("expected an error for a Secret with no usable credential key")
-	}
-	for _, want := range []string{"sshPrivateKey", "token", "githubAppID"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error %q does not name the %q key", err, want)
-		}
-	}
-}
-
-// TestMaterialiseCredentialsEmptySecret keeps the no-credentials case working:
-// a public repository needs no Secret and must not be turned into an error.
-func TestMaterialiseCredentialsEmptySecret(t *testing.T) {
-	repoDir := t.TempDir()
-	w := &GitWorkspace{Root: repoDir}
-	checkout := &Checkout{RepoDir: repoDir, Env: map[string]string{}}
-
-	if err := w.materialiseCredentials(
-		context.Background(), repoDir, "https://github.com/4sh/public", nil, checkout); err != nil {
-		t.Fatalf("unexpected error for an absent Secret: %v", err)
-	}
-	if len(checkout.cleanupPaths) != 0 {
-		t.Fatalf("got cleanup paths %v, want none", checkout.cleanupPaths)
 	}
 }

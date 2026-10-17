@@ -14,30 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package shared
+package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
-)
 
-// Well-known keys read from a VCS credentials Secret. A Secret carries exactly
-// one of these layouts; see materialiseCredentials for the precedence between
-// them. The GitHub App keys live in githubapp.go.
-const (
-	// SecretKeySSHPrivateKey holds a PEM private key for SSH clone URLs.
-	SecretKeySSHPrivateKey = "sshPrivateKey"
-	// SecretKeyUsername and SecretKeyPassword hold HTTP basic credentials.
-	SecretKeyUsername = "username"
-	SecretKeyPassword = "password"
-	// SecretKeyToken is accepted as an alias for the password, which is what
-	// GitHub, GitLab and Gitea personal access tokens actually are.
-	SecretKeyToken = "token"
+	"github.com/nrx-ops/stellarCD/internal/controller/shared"
 )
 
 // CheckoutRequest describes the working copy a Flare needs.
@@ -48,6 +37,8 @@ type CheckoutRequest struct {
 	URL string
 	// Branch is the branch to check out.
 	Branch string
+	// Revision pins a commit on that branch. Empty means its tip.
+	Revision string
 	// Path is the module directory inside the repository.
 	Path string
 	// Credentials are the raw Secret entries. They are written to files with
@@ -88,16 +79,13 @@ type WorkspaceProvider interface {
 type GitWorkspace struct {
 	// Root is the directory holding every checkout.
 	Root string
-	// Runner defaults to execCommand when nil.
+	// Runner defaults to a Shell that discards its output when nil.
 	Runner CommandRunner
-	// HTTPClient talks to the GitHub API when a Secret carries GitHub App
-	// credentials. It defaults to defaultGitHubHTTPClient when nil.
-	HTTPClient *http.Client
 }
 
 // NewGitWorkspace returns a provider rooted at root.
 func NewGitWorkspace(root string) *GitWorkspace {
-	return &GitWorkspace{Root: root, Runner: execCommand}
+	return &GitWorkspace{Root: root, Runner: (&Shell{}).Run}
 }
 
 // Prepare clones or updates the repository and returns the module directory.
@@ -118,7 +106,7 @@ func (w *GitWorkspace) Prepare(ctx context.Context, req CheckoutRequest) (*Check
 		}
 		checkout.credDir = credDir
 	}
-	if err := w.materialiseCredentials(ctx, checkout.credDir, req.URL, req.Credentials, checkout); err != nil {
+	if err := w.materialiseCredentials(checkout.credDir, req.URL, req.Credentials, checkout); err != nil {
 		_ = w.Cleanup(checkout)
 		return nil, err
 	}
@@ -130,6 +118,12 @@ func (w *GitWorkspace) Prepare(ctx context.Context, req CheckoutRequest) (*Check
 	if err := w.sync(ctx, repoDir, req.URL, branch, checkout); err != nil {
 		_ = w.Cleanup(checkout)
 		return nil, err
+	}
+	if req.Revision != "" {
+		if err := w.pin(ctx, repoDir, req.Revision, checkout); err != nil {
+			_ = w.Cleanup(checkout)
+			return nil, err
+		}
 	}
 
 	revision, err := w.revision(ctx, repoDir, checkout)
@@ -179,6 +173,21 @@ func (w *GitWorkspace) sync(ctx context.Context, repoDir, url, branch string, ch
 	return nil
 }
 
+// pin moves the checkout to one commit. A shallow clone only has the branch
+// tip, so the commit is fetched by SHA first; GitHub, GitLab and Gitea all
+// allow that for reachable commits.
+func (w *GitWorkspace) pin(ctx context.Context, repoDir, revision string, checkout *Checkout) error {
+	env := gitEnv(checkout.Env)
+	runner := w.runner()
+	if out, _, err := runner(ctx, repoDir, env, "git", "fetch", "--depth=1", "origin", revision); err != nil {
+		return fmt.Errorf("failed to fetch revision %s: %w: %s", revision, err, lastLine(out))
+	}
+	if out, _, err := runner(ctx, repoDir, env, "git", "checkout", "--detach", revision); err != nil {
+		return fmt.Errorf("failed to check out revision %s: %w: %s", revision, err, lastLine(out))
+	}
+	return nil
+}
+
 // revision resolves the checked-out commit so the Flare can report exactly what
 // it ran against.
 func (w *GitWorkspace) revision(ctx context.Context, repoDir string, checkout *Checkout) (string, error) {
@@ -193,13 +202,14 @@ func (w *GitWorkspace) revision(ctx context.Context, repoDir string, checkout *C
 // at them through the environment. Credentials never appear on a command line:
 // /proc/<pid>/cmdline is world-readable, a 0600 file is not.
 //
-// Exactly one layout is used per checkout, in this order: an SSH key, then
-// GitHub App credentials, then a static username/password or token. A Secret
-// that carries none of them is an error rather than a silent anonymous clone,
-// which fails much later with a message that points at the repository instead
-// of at the Secret.
+// Exactly one layout is used per checkout: an SSH key, else a static
+// username/password or token. A GitHub App never reaches this point: the
+// controller exchanges it for an installation token before the Job starts, so
+// the App's private key stays out of a pod that runs repository code. A Secret
+// carrying none of these is an error rather than a silent anonymous clone,
+// which would fail much later with a message about the repository instead of
+// the Secret.
 func (w *GitWorkspace) materialiseCredentials(
-	ctx context.Context,
 	credDir, cloneURL string,
 	creds map[string][]byte,
 	checkout *Checkout,
@@ -208,7 +218,7 @@ func (w *GitWorkspace) materialiseCredentials(
 		return nil
 	}
 
-	if key, ok := creds[SecretKeySSHPrivateKey]; ok && len(key) > 0 {
+	if key, ok := creds[shared.SecretKeySSHPrivateKey]; ok && len(key) > 0 {
 		path := filepath.Join(credDir, ".stellarcd-ssh-key")
 		if err := os.WriteFile(path, ensureTrailingNewline(key), 0o600); err != nil {
 			return fmt.Errorf("failed to stage SSH key: %w", err)
@@ -221,28 +231,22 @@ func (w *GitWorkspace) materialiseCredentials(
 		return nil
 	}
 
-	if hasGitHubAppCredentials(creds) {
-		// The token is minted here, per checkout, and expires about an hour
-		// later. It is staged exactly like a personal access token: from git's
-		// point of view an installation token is just a password.
-		token, err := w.githubApp().installationToken(ctx, cloneURL, creds)
-		if err != nil {
-			return err
-		}
-		return w.stageBasicAuth(credDir, cloneURL, githubAppUsername, token, checkout)
+	if shared.IsGitHubApp(creds) {
+		return errors.New("GitHub App credentials reached the runner; " +
+			"the controller must exchange them for an installation token")
 	}
 
-	password := string(creds[SecretKeyPassword])
+	password := string(creds[shared.SecretKeyPassword])
 	if password == "" {
-		password = string(creds[SecretKeyToken])
+		password = string(creds[shared.SecretKeyToken])
 	}
 	if password == "" {
 		return fmt.Errorf(
 			"VCS credentials Secret carries none of %q, %q, %q/%q or %q plus %q",
-			SecretKeySSHPrivateKey, SecretKeyToken, SecretKeyUsername, SecretKeyPassword,
-			SecretKeyGitHubAppID, SecretKeyGitHubAppPrivateKey)
+			shared.SecretKeySSHPrivateKey, shared.SecretKeyToken, shared.SecretKeyUsername,
+			shared.SecretKeyPassword, shared.SecretKeyGitHubAppID, shared.SecretKeyGitHubAppPrivateKey)
 	}
-	username := string(creds[SecretKeyUsername])
+	username := string(creds[shared.SecretKeyUsername])
 	if username == "" {
 		// Every supported provider accepts an arbitrary username next to a
 		// personal access token.
@@ -265,11 +269,6 @@ func (w *GitWorkspace) stagingDir() (string, error) {
 		return "", fmt.Errorf("failed to create the credential staging directory: %w", err)
 	}
 	return dir, nil
-}
-
-// githubApp returns the authenticator used to mint installation tokens.
-func (w *GitWorkspace) githubApp() *githubAppAuthenticator {
-	return &githubAppAuthenticator{client: w.HTTPClient}
 }
 
 // stageBasicAuth writes a git credential-store file and points git at it. It
@@ -338,7 +337,7 @@ func (w *GitWorkspace) runner() CommandRunner {
 	if w.Runner != nil {
 		return w.Runner
 	}
-	return execCommand
+	return (&Shell{}).Run
 }
 
 // gitEnv renders the checkout environment plus the minimum a git process needs.
@@ -351,7 +350,23 @@ func gitEnv(extra map[string]string) []string {
 	for k, v := range extra {
 		env[k] = v
 	}
-	return buildEnv(env)
+	return renderEnv(env)
+}
+
+// renderEnv renders an environment map in a stable order. Git gets only what
+// is listed here: the runner's own environment carries the cloud credentials,
+// which a git process has no business seeing.
+func renderEnv(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
 }
 
 // resolveModuleDir joins the module path onto the repository root and refuses

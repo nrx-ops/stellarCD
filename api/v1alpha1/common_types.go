@@ -45,15 +45,130 @@ const (
 	VCSProviderGitea  VCSProvider = "Gitea"
 )
 
-// TerrariumEngine is the infrastructure-as-code binary used to reach the
-// desired state. "Terrarium" is the stellarCD umbrella term for the family.
-type TerrariumEngine string
+// Engine is the binary that actually runs init, plan and apply, and owns the
+// state. Terragrunt is deliberately not a value here: it is a wrapper that
+// drives one of these engines, so it is configured on its own in
+// TerragruntSpec and combines with either engine.
+// +kubebuilder:validation:Enum=Terraform;OpenTofu
+type Engine string
 
 const (
-	TerrariumEngineTerraform  TerrariumEngine = "Terraform"
-	TerrariumEngineOpenTofu   TerrariumEngine = "OpenTofu"
-	TerrariumEngineTerragrunt TerrariumEngine = "Terragrunt"
+	EngineTerraform Engine = "Terraform"
+	EngineOpenTofu  Engine = "OpenTofu"
 )
+
+// TerragruntMode decides what an Astral's path points at when Terragrunt is on.
+// +kubebuilder:validation:Enum=Unit;RunAll
+type TerragruntMode string
+
+const (
+	// TerragruntModeUnit means the path is a single unit, so a single state.
+	TerragruntModeUnit TerragruntMode = "Unit"
+	// TerragruntModeRunAll means the path is a parent directory: every unit
+	// below it runs, each with its own state, and status is tracked per unit.
+	TerragruntModeRunAll TerragruntMode = "RunAll"
+)
+
+// TerragruntSpec puts Terragrunt in front of the engine.
+type TerragruntSpec struct {
+	// Enabled routes every command through Terragrunt.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+	// Version is the exact Terragrunt version, e.g. "1.1.6". Empty means the
+	// version the runner image ships; a mismatch fails the Flare before init.
+	// +kubebuilder:validation:Pattern=`^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$`
+	// +optional
+	Version string `json:"version,omitempty"`
+	// Mode selects a single unit or every unit below the path.
+	// +kubebuilder:default=Unit
+	// +optional
+	Mode TerragruntMode `json:"mode,omitempty"`
+	// ExcludedUnits are skipped by whole-Astral runs in RunAll mode, typically
+	// a unit that is broken and being fixed. Paths are relative to the Astral
+	// path. They are never inherited.
+	// +optional
+	ExcludedUnits []string `json:"excludedUnits,omitempty"`
+}
+
+// RunAll reports whether the spec runs every unit below the path.
+func (t *TerragruntSpec) RunAll() bool {
+	return t != nil && t.Enabled && t.Mode == TerragruntModeRunAll
+}
+
+// SyncStatus says whether real infrastructure matches the tracked revision.
+// +kubebuilder:validation:Enum=Synced;OutOfSync;Unknown
+type SyncStatus string
+
+const (
+	// SyncStatusSynced means the last plan found nothing to change.
+	SyncStatusSynced SyncStatus = "Synced"
+	// SyncStatusOutOfSync means the last plan found changes to apply.
+	SyncStatusOutOfSync SyncStatus = "OutOfSync"
+	// SyncStatusUnknown means no plan has succeeded yet.
+	SyncStatusUnknown SyncStatus = "Unknown"
+)
+
+// Worse returns the worse of two sync statuses, used to fold per-unit results
+// into one Astral status: one drifted unit makes the whole Astral drifted.
+func (s SyncStatus) Worse(other SyncStatus) SyncStatus {
+	rank := func(v SyncStatus) int {
+		switch v {
+		case SyncStatusOutOfSync:
+			return 2
+		case SyncStatusUnknown:
+			return 1
+		default:
+			return 0
+		}
+	}
+	if rank(other) > rank(s) {
+		return other
+	}
+	return s
+}
+
+// PlanSummary counts what a plan would change. A replacement deletes the
+// resource before recreating it, so it is counted on its own and also treated
+// as a destruction by the destroy protection.
+type PlanSummary struct {
+	// ToCreate is the number of resources the plan adds.
+	// +optional
+	ToCreate int32 `json:"toCreate"`
+	// ToUpdate is the number of resources changed in place.
+	// +optional
+	ToUpdate int32 `json:"toUpdate"`
+	// ToDestroy is the number of resources the plan deletes outright.
+	// +optional
+	ToDestroy int32 `json:"toDestroy"`
+	// ToReplace is the number of resources deleted and recreated.
+	// +optional
+	ToReplace int32 `json:"toReplace"`
+}
+
+// HasChanges reports whether the plan would change anything.
+func (p *PlanSummary) HasChanges() bool {
+	return p != nil && (p.ToCreate > 0 || p.ToUpdate > 0 || p.ToDestroy > 0 || p.ToReplace > 0)
+}
+
+// Destroys reports how many resources the plan deletes, replacements included.
+func (p *PlanSummary) Destroys() int32 {
+	if p == nil {
+		return 0
+	}
+	return p.ToDestroy + p.ToReplace
+}
+
+// Add folds another summary into this one.
+func (p *PlanSummary) Add(other *PlanSummary) {
+	if other == nil {
+		return
+	}
+	p.ToCreate += other.ToCreate
+	p.ToUpdate += other.ToUpdate
+	p.ToDestroy += other.ToDestroy
+	p.ToReplace += other.ToReplace
+}
 
 // ApprovalPolicy decides whether a Flare may leave the Pending phase on its own.
 type ApprovalPolicy string
@@ -76,21 +191,6 @@ const (
 	BackendTypeGCS       BackendType = "GCS"
 	BackendTypeAzureBlob BackendType = "AzureBlob"
 )
-
-// TerrariumSpec pins the engine and version used across a Galaxy. Astrals may
-// override the version but not the engine, so a Galaxy stays homogeneous.
-type TerrariumSpec struct {
-	// Engine is the binary invoked to plan and apply infrastructure.
-	// +kubebuilder:validation:Enum=Terraform;OpenTofu;Terragrunt
-	// +kubebuilder:default=Terraform
-	// +optional
-	Engine TerrariumEngine `json:"engine,omitempty"`
-	// Version is the exact engine version, e.g. "1.9.5". An empty value means
-	// "whatever version the runner image ships".
-	// +kubebuilder:validation:Pattern=`^$|^v?[0-9]+\.[0-9]+(\.[0-9]+)?$`
-	// +optional
-	Version string `json:"version,omitempty"`
-}
 
 // BackendConfig describes the remote state backend. Only the fields relevant to
 // the selected type are honoured; the rest are ignored by the controller.
@@ -207,10 +307,24 @@ type EnvSecretRef struct {
 	// +optional
 	Key string `json:"key,omitempty"`
 	// EnvPrefix is prepended to each projected key to build the environment
-	// variable name. Terraform reads inputs from TF_VAR_<name>.
+	// variable name. Terraform reads inputs from TF_VAR_<name>, hence the
+	// default. Set it to "" for cloud credentials, which providers read under
+	// their own names (AWS_ACCESS_KEY_ID, GOOGLE_CREDENTIALS, ...). It is a
+	// pointer so that "" can be told apart from "not set".
 	// +kubebuilder:default="TF_VAR_"
 	// +optional
-	EnvPrefix string `json:"envPrefix,omitempty"`
+	EnvPrefix *string `json:"envPrefix,omitempty"`
+}
+
+// DefaultEnvPrefix is the prefix used when envPrefix is not set.
+const DefaultEnvPrefix = "TF_VAR_"
+
+// Prefix returns the effective env var prefix.
+func (r EnvSecretRef) Prefix() string {
+	if r.EnvPrefix == nil {
+		return DefaultEnvPrefix
+	}
+	return *r.EnvPrefix
 }
 
 // ObjectRefStatus is a lightweight back-reference recorded on a status. It is
