@@ -3,6 +3,7 @@ set -euo pipefail
 
 CONTROLLER_IMG="${CONTROLLER_IMG:-controller:latest}"
 UI_IMG="${UI_IMG:-ui:latest}"
+RUNNER_IMG="${RUNNER_IMG:-runner:latest}"
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
 
 # Check minikube is running
@@ -31,6 +32,7 @@ load_image() {
 }
 
 load_image "$CONTROLLER_IMG"
+load_image "$RUNNER_IMG"
 load_image "$UI_IMG"
 
 echo "✓ Images loaded successfully into minikube"

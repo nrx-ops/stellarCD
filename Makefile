@@ -190,6 +190,7 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 CONTROLLER_IMG ?= controller:latest
 UI_IMG ?= ui:latest
+RUNNER_IMG ?= runner:latest
 MINIKUBE_PROFILE ?= minikube
 
 .PHONY: minikube-check
@@ -197,12 +198,12 @@ minikube-check: ## Check minikube environment and dependencies.
 	@MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-check.sh
 
 .PHONY: minikube-build
-minikube-build: ## Build images locally for minikube (controller and UI).
-	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) ./scripts/minikube-build.sh
+minikube-build: ## Build images locally for minikube (controller, runner and UI).
+	@CONTROLLER_IMG=$(CONTROLLER_IMG) RUNNER_IMG=$(RUNNER_IMG) UI_IMG=$(UI_IMG) ./scripts/minikube-build.sh
 
 .PHONY: minikube-load
 minikube-load: ## Load built images into minikube's Docker daemon.
-	@CONTROLLER_IMG=$(CONTROLLER_IMG) UI_IMG=$(UI_IMG) MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-load.sh
+	@CONTROLLER_IMG=$(CONTROLLER_IMG) RUNNER_IMG=$(RUNNER_IMG) UI_IMG=$(UI_IMG) MINIKUBE_PROFILE=$(MINIKUBE_PROFILE) ./scripts/minikube-load.sh
 
 .PHONY: minikube-deploy
 minikube-deploy: kustomize ## Deploy to minikube cluster (after loading images).

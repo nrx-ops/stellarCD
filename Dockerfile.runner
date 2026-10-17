@@ -1,0 +1,73 @@
+# Image of the Kubernetes Jobs that execute Flares: the stellarCD runner plus
+# git, Terraform, OpenTofu and Terragrunt. The manager image never contains an
+# engine; this one is the only place they run.
+#
+# Engine versions are pinned at build time. A Flare that asks for another
+# version fails before init, as the specification requires; build an image per
+# version, or point --runner-image at one, to support several.
+
+ARG TERRAFORM_VERSION=1.16.6
+ARG TOFU_VERSION=1.13.1
+ARG TERRAGRUNT_VERSION=1.1.6
+
+# ---- runner binary ----
+FROM golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
+WORKDIR /workspace
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -ldflags "\
+	-X github.com/nrx-ops/stellarCD/internal/version.Version=${VERSION} \
+	-X github.com/nrx-ops/stellarCD/internal/version.GitCommit=${GIT_COMMIT} \
+	-X github.com/nrx-ops/stellarCD/internal/version.BuildDate=${BUILD_DATE}" \
+	-o runner ./cmd/runner
+
+# ---- engines, each checked against its published SHA256SUMS ----
+FROM alpine:3.22 AS engines
+ARG TARGETARCH
+ARG TERRAFORM_VERSION
+ARG TOFU_VERSION
+ARG TERRAGRUNT_VERSION
+RUN apk add --no-cache curl unzip
+WORKDIR /dl
+RUN set -eu; \
+	arch="${TARGETARCH:-amd64}"; \
+	\
+	tf="terraform_${TERRAFORM_VERSION}_linux_${arch}.zip"; \
+	curl -fsSLO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/${tf}"; \
+	curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS" \
+		| grep " ${tf}\$" | sha256sum -c -; \
+	unzip -q "${tf}" terraform; \
+	\
+	tofu="tofu_${TOFU_VERSION}_linux_${arch}.zip"; \
+	curl -fsSLO "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/${tofu}"; \
+	curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_SHA256SUMS" \
+		| grep " ${tofu}\$" | sha256sum -c -; \
+	unzip -q "${tofu}" tofu; \
+	\
+	tg="terragrunt_linux_${arch}"; \
+	curl -fsSLO "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/${tg}"; \
+	curl -fsSL "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION}/SHA256SUMS" \
+		| grep " ${tg}\$" | sha256sum -c -; \
+	mv "${tg}" terragrunt; \
+	chmod 0755 terraform tofu terragrunt
+
+# ---- final image ----
+# Alpine rather than distroless: the runner shells out to git and the engines,
+# and hooks need /bin/sh. Providers are static Go binaries, so musl is not an
+# issue for them.
+FROM alpine:3.22
+RUN apk add --no-cache git openssh-client ca-certificates \
+	&& addgroup -g 65532 -S nonroot \
+	&& adduser -u 65532 -S -G nonroot -h /tmp nonroot
+COPY --from=engines /dl/terraform /dl/tofu /dl/terragrunt /usr/local/bin/
+COPY --from=builder /workspace/runner /usr/local/bin/stellarcd-runner
+USER 65532:65532
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/stellarcd-runner"]
