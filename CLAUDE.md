@@ -34,38 +34,61 @@ Terragrunt is a **wrapper**, not an alternative to Terraform/OpenTofu. Model the
 
 ```yaml
 spec:
-  engine: terraform            # terraform | opentofu  (does init/plan/apply, owns the state)
-  engineVersion: "1.9.5"
+  engine: Terraform            # Terraform | OpenTofu  (does init/plan/apply, owns the state)
+  engineVersion: "1.16.6"
   terragrunt:                  # optional
     enabled: true
-    version: "0.67.x"
-    mode: run-all              # unit | run-all
-    excludedUnits: []          # proposal, to confirm
+    version: "1.1.6"
+    mode: RunAll               # Unit | RunAll
+    excludedUnits: []          # kept (decision of 17/10/2026)
 ```
 
 Valid combinations: Terraform alone, OpenTofu alone, Terragrunt + Terraform, Terragrunt + OpenTofu.
-The current `executor` enum (`terraform;terragrunt`) is wrong and must be replaced.
+Enum values are CamelCase, like every other enum in the API. The engine lives on the Astral; there is
+no `Terrarium` type any more: the name collides with an existing open-source project (decision of
+17/10/2026). Terragrunt 1.x drives OpenTofu by default, so the runner always passes `--tf-path`.
 
-### Astral spec (target)
-`galaxyRef`, `gitRepository{url, revision, credentialsSecretRef}`, `path`, `engine`, `engineVersion`,
-`terragrunt{...}`, `interval` (default 5m), `cloudCredentialsSecretRef`, `syncPolicy` (`Manual` | `Auto`),
-`allowDestroy` (default false), `suspend`, `flareHistoryLimit` (default 20, to confirm).
+### Astral spec
+Decision of 17/10/2026: the fields already in the code are kept, and the specification is updated to
+match them. That means `syncPolicy`, `allowDestroy`, `suspend` and `flareHistoryLimit` are NOT added.
 
-### Astral status (target)
-Split progress from result. Do NOT keep a single `phase` mixing both.
-- `syncStatus`: `Synced` | `OutOfSync` | `Unknown` (alignment with Git)
-- `phase`: `Idle` | `Planning` | `Applying` | `Failed` (what is running)
-- `drift`: counts to create / update / destroy + detection time
-- `units[]`: run-all only. Per unit: relative path, syncStatus, drift, last Flare
-- `lastSyncedRevision`, `lastSyncTime`, `lastFlareRef`, `observedGeneration`, `conditions`
+`universeRef`, `galaxyRef`, `displayName`, `description`, `vcsRepository{provider, url, branch, path,
+secretRef}`, `engine`, `engineVersion`, `terragrunt{...}`, `variables` (non-sensitive), `secrets[]`
+(`{name, key, envPrefix}`; `envPrefix: ""` keeps the Secret's own key names, which cloud credentials
+need), `workspaceName`, `enableLocking` (engine `-lock` only), `autoApply`, `planOnPR`, `applyOnMerge`,
+`customHooks`, `dependsOn`, `driftDetection{enabled, interval}`.
 
-In run-all, the Astral takes the worst status of its units.
+### Astral status
+Decision of 17/10/2026: `syncStatus` replaces `phase`. There is no `phase` on the Astral any more.
+- `syncStatus`: `Synced` | `OutOfSync` | `Unknown` (alignment with Git, from the last successful plan
+  or apply; a failed run says nothing about alignment and leaves it unchanged)
+- `activeFlare`: the Flare whose Job is running, if any (this is how progress is shown)
+- `drift`: `detected`, `toCreate`, `toUpdate`, `toDestroy`, `toReplace`, `lastChecked`, `lastDetected`
+- `units[]`: RunAll only. Per unit: path, syncStatus, result, drift, lastFlare, message
+- `lastSyncedRevision`, `lastSyncTime`, `lastFlareRef`, `lastFlareStatus`, `flareHistory`,
+  `observedGeneration`, `conditions` (failures are reported on the `Reconciled` condition)
 
-### Flare (target)
-Spec: `astralRef`, `type` (`Plan` | `Apply`), `scope` (`all` | `unit`), `unitPath` (required if scope=unit),
-`trigger` (`Schedule` | `GitChange` | `Manual` | `Drift`), `revision`, `initiatedBy`, `planRef` (Apply only).
-Status: `phase` (`Pending` | `Running` | `Succeeded` | `Failed` | `Cancelled`), `step`, `jobName`,
-`startedAt`, `finishedAt`, `planSummary`, `resources[]` (with their unit), `unitResults[]`, `message`.
+In RunAll, the Astral takes the worst status of its units. Each unit keeps the newest word any Flare
+said about it, so a unit-scoped plan updates only its unit, and an excluded unit keeps its last result.
+
+### Flare
+Decision of 17/10/2026: the code contract and the specification contract are merged. Where both had a
+field for the same thing, the code name is kept: `action` (spec `type`, with `Plan`, `Apply`, `Destroy`,
+`Refresh`), `requestedBy` (spec `initiatedBy`), `startTime` / `completionTime` (spec `startedAt` /
+`finishedAt`). The spec's per-resource list is `resourceChanges`, because `resources` already holds the
+applied counts.
+
+Spec: `universeRef`, `galaxyRef`, `astralRef`, `action`, `scope` (`All` | `Unit`), `unitPath` (required
+if scope=Unit), `trigger` (`Manual` | `Schedule` | `GitChange` | `Drift`), `revision`, `planRef`,
+`confirmDestroy`, `requestedBy`, `variables`, `autoApprove`, `approved`, `cancel`, `parallelism`,
+`refreshBeforePlan`, `tags`, `timeoutSeconds`. CEL rules: unitPath required for scope Unit; only a
+Manual Flare may use scope Unit.
+
+Status: `phase` (`Pending` | `AwaitingApproval` | `AwaitingConfirmation` | `Running` | `Succeeded` |
+`Failed` | `Cancelled`), `step` (`GitFetch` | `Init` | `Plan` | `Apply` | `Report`), `jobName`,
+`attempt`, `lockAcquiredAt`, `revision`, `planSummary`, `resourceChanges[]` (address, action, unit; capped
+at 200), `pendingDestroy[]`, `unitResults[]`, `message`, `startTime`, `completionTime`, `duration`,
+`resources` (applied counts), `planOutput`, `applyOutput`, `errors`, `warnings`, `conditions`.
 
 ## Architecture Decisions
 1. **CRD-driven.** All configuration lives in Custom Resources. No local config file.
@@ -73,35 +96,53 @@ Status: `phase` (`Pending` | `Running` | `Succeeded` | `Failed` | `Cancelled`), 
    (no `os/exec` of IaC binaries in the manager). It creates a Flare, creates a Job owned by the Flare,
    watches it, and reports results. This keeps the controller light and restartable: running Jobs
    survive a controller restart and are picked up again through their Flares.
-3. **Job content.** Image with the engine at `engineVersion`, plus Terragrunt if enabled. Git secret
-   mounted as a file, cloud secret injected as environment variables. `backoffLimit: 0` (never retry an
-   Apply automatically). `activeDeadlineSeconds` set (default to confirm).
+   Implemented: `cmd/runner` + `internal/runner` run inside the Job (the only code that execs git and
+   the engines); `internal/runspec` is the contract between the two sides and contains no exec code.
+   The controller must never import `internal/runner`.
+3. **Job content.** Runner image `Dockerfile.runner` (git, Terraform, OpenTofu, Terragrunt, each checked
+   against its published SHA256SUMS). Git secret mounted as a file; a GitHub App is exchanged by the
+   controller for a one-hour installation token first, so the App private key never reaches the pod.
+   Cloud secrets injected as env vars from their Secret (never through the run request). No
+   ServiceAccount token in the pod. `backoffLimit: 0`, `activeDeadlineSeconds` = `timeoutSeconds`
+   (default 3600), non-root, read-only root filesystem.
 4. **Command selection inside the Job:**
     - no Terragrunt: engine commands in `path`
     - Terragrunt, mode `unit`: `terragrunt plan/apply` in `path`
     - Terragrunt, mode `run-all`, scope `all`: `terragrunt run-all plan/apply` in `path`, excluded units skipped
     - Terragrunt, scope `unit`: plain `terragrunt plan/apply` in `path/unitPath`
-5. **Plans are saved** and converted to JSON (`resource_changes`) to compute drift, one per unit in run-all.
+5. **Plans are saved** and converted to JSON (`resource_changes`) to compute drift, one per unit in run-all
+   (`terragrunt run --all --out-dir --json-out-dir --report-file`). Apply always applies the saved plan
+   checked by the destroy protection, never a fresh one.
 6. **RBAC.** The controller needs create/get/list/watch/delete on `batch/jobs` and get on `pods/log`,
    on top of its own CRDs and read access to Secrets.
 
 ## Business Rules (do not break)
 - **One active Flare per Astral**, whatever its scope. A unit-scoped run blocks run-all and vice versa.
-  Scheduled Flares are skipped while one is active. Manual requests are rejected (queueing: to confirm).
+  Scheduled Flares are skipped while one is active. The lock is `Flare.status.lockAcquiredAt`, held
+  while the Flare's Job runs (decision of 17/10/2026: never in controller memory). It is taken with an
+  uncached read under a single Flare worker. A Flare that finds the lock taken currently WAITS (Pending,
+  retried): the specification says manual requests are rejected, queueing is still to confirm.
   This lock adds to the backend state lock, it does not replace it.
 - **Automatic Flares** (interval, new commit, Astral creation) always use scope `all`.
   Only manual Flares may target a single unit.
 - **Inheritance:** effective value = Astral value, else Galaxy `defaults`, else code default.
   `allowDestroy` and `terragrunt.excludedUnits` are never inherited.
-- **Destroy protection:** if a plan destroys anything (replacements included, to confirm):
-  `Manual` requires explicit user confirmation, `Auto` without `allowDestroy` does NOT apply and leaves
-  the Astral OutOfSync with a clear message, `Auto` with `allowDestroy` applies.
-- **Sync policy:** `Manual` only plans, apply waits for a user. `Auto` chains plan then apply on drift.
+- **Destroy protection** (decision of 17/10/2026): an apply whose plan deletes or replaces anything
+  ALWAYS waits for a user, there is no `allowDestroy`. The Flare stops in `AwaitingConfirmation` with
+  `status.pendingDestroy`; setting `spec.confirmDestroy` to the Astral's name launches a second Job
+  whose allowlist is exactly those resources: it re-plans and applies only if nothing else is destroyed.
+  `autoApply` never chains an apply onto a destroying plan ("Auto-apply blocked: the plan destroys
+  resources."). Replacements count as destructions.
+- **Auto-apply:** `autoApply` (kept from the code instead of `syncPolicy`) chains an Apply onto a
+  successful whole-Astral Plan that found changes, pinned to that plan's revision.
+- **RunAll blocked by a failed unit:** a whole-Astral apply is refused while any unit is failed;
+  plans and single-unit runs stay allowed. `autoApply` reports "Auto-apply blocked: a unit failed."
 - A Universe rejects Astrals using a non-allowed engine, or Terragrunt when it is not allowed.
 
 ## Migration From the Current Code
-The repo currently has a single kind `StellarApp` with an `executor` enum and a mixed `phase`.
-Decided changes, in this order:
+Done: Universe, Galaxy, Astral and Flare exist and are reconciled; Flares run in Jobs; the engine model
+is engine + Terragrunt. Still open: the API group, and removing `StellarApp` (and its dashboard views).
+Original plan, kept for reference:
 1. Settle the API group (see Open Questions) before touching anything.
 2. Replace `StellarApp` with `Astral` using the target model above. No installation exists yet, so no
    conversion webhook is needed. Prefer the Kubebuilder CLI to scaffold the new kind
@@ -125,12 +166,17 @@ Decided changes, in this order:
 Do not invent behaviour for these. Leave a `TODO(spec):` comment and ask:
 - API group: `core.stellarcd.io` (current) vs earlier `gitops` / `nrx-ops.io`.
 - Universe cluster-scoped? Galaxy mapped to a namespace?
-- How the Job returns its result: pod writes the Flare status, result ConfigMap, or controller parses logs.
-- Log retention after the Job pod is gone.
+- How the Job returns its result. Implemented as: the controller parses the runner's log (step markers
+  and a result block tagged with a per-Job nonce), so the pod needs no cluster credentials. To confirm.
+- Log retention after the Job pod is gone. Implemented as: finished Jobs kept 24 h
+  (`ttlSecondsAfterFinished`); the result itself is copied into the Flare status at once. To confirm.
+- Runner image strategy. Implemented as: one image with pinned engine versions; a Flare asking for
+  another version fails before init. To confirm (vs. downloading versions at run time).
 - New commit detection: lightweight polling (`ls-remote`) vs incoming webhook.
-- Apply after a newer commit landed: apply the saved plan or re-plan first.
-- Run-all failure semantics when only some units fail.
-- `excludedUnits` option: keep or drop.
+- Apply after a newer commit landed. Implemented as: every Apply Job plans then applies its own saved
+  plan; a chained auto-apply is pinned to the revision its plan ran. To confirm.
+- Run-all failure semantics when only some units fail. Implemented as the ENT-Flare proposal: the Flare
+  is Failed as soon as one unit fails, the other units' results are still reported. To confirm.
 - Creating Astrals from the UI bypasses Git: allow, restrict, or generate a pull request instead.
 
 ## Go Development Guidelines
