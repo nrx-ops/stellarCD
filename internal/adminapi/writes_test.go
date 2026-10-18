@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,7 +86,8 @@ func getFlare(t *testing.T, s *Server, name string) *corev1alpha1.Flare {
 }
 
 func TestWritesDisabled(t *testing.T) {
-	s := newServer(t, astralIn(tenant, "api", "u", testGalaxy))
+	s := newServer(t, astralIn(tenant, "api", "u", testGalaxy), galaxy(""),
+		readyUniverse(), secret("pat", map[string][]byte{"token": []byte("t")}))
 
 	routes := []struct{ method, path string }{
 		{http.MethodPost, "/api/v1/astrals"},
@@ -95,6 +97,12 @@ func TestWritesDisabled(t *testing.T) {
 		{http.MethodPost, "/api/v1/flares/tenant/f/cancel"},
 		{http.MethodPost, "/api/v1/flares/tenant/f/approve"},
 		{http.MethodPost, "/api/v1/flares/tenant/f/confirm-destroy"},
+		{http.MethodPost, "/api/v1/galaxies"},
+		{http.MethodPut, "/api/v1/galaxies/tenant/gal"},
+		{http.MethodDelete, "/api/v1/galaxies/tenant/gal"},
+		{http.MethodPost, "/api/v1/namespaces/tenant/credentials"},
+		{http.MethodPut, "/api/v1/namespaces/tenant/credentials/pat"},
+		{http.MethodDelete, "/api/v1/namespaces/tenant/credentials/pat"},
 	}
 	for _, rt := range routes {
 		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
@@ -106,8 +114,14 @@ func TestWritesDisabled(t *testing.T) {
 	}
 
 	// Nothing was deleted behind the 403.
-	if rec := do(t, s, "/api/v1/astrals/tenant/api"); rec.Code != http.StatusOK {
-		t.Errorf("astral after refused delete: status = %d, want %d", rec.Code, http.StatusOK)
+	for _, path := range []string{"/api/v1/astrals/tenant/api", "/api/v1/galaxies/tenant/gal"} {
+		if rec := do(t, s, path); rec.Code != http.StatusOK {
+			t.Errorf("%s after refused delete: status = %d, want %d", path, rec.Code, http.StatusOK)
+		}
+	}
+	var pat corev1.Secret
+	if err := s.Reader.Get(context.Background(), client.ObjectKey{Namespace: tenant, Name: "pat"}, &pat); err != nil {
+		t.Errorf("secret after refused delete: %v", err)
 	}
 }
 

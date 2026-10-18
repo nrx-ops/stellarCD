@@ -119,8 +119,7 @@ func (s *Server) handleCreateAstral(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errs := validation.IsDNS1123Label(astral.Name); len(errs) > 0 {
-		s.fail(w, r, http.StatusBadRequest, "metadata.name",
-			"Use at most 63 lowercase letters, digits or '-', starting and ending with a letter or digit")
+		s.fail(w, r, http.StatusBadRequest, "metadata.name", msgDNSLabel)
 		return
 	}
 	if !s.completeFromGalaxy(w, r, astral) {
@@ -478,8 +477,8 @@ func (s *Server) decodeAstral(w http.ResponseWriter, r *http.Request) (*corev1al
 	}
 	var astral corev1alpha1.Astral
 	if err := json.Unmarshal(data, &astral); err != nil {
-		if badDriftInterval(data) {
-			s.fail(w, r, http.StatusBadRequest, "spec.driftDetection.interval", "Expected duration format: 5m, 1h")
+		if badDuration(data, "spec", "driftDetection", "interval") {
+			s.fail(w, r, http.StatusBadRequest, "spec.driftDetection.interval", msgDurationFormat)
 			return nil, false
 		}
 		s.fail(w, r, http.StatusBadRequest, "", "The request body is not a valid Astral.")
@@ -488,21 +487,20 @@ func (s *Server) decodeAstral(w http.ResponseWriter, r *http.Request) (*corev1al
 	return &astral, true
 }
 
-// badDriftInterval reports whether the body's drift interval is what broke
-// decoding: metav1.Duration fails the whole document on a bad duration.
-func badDriftInterval(data []byte) bool {
-	var probe struct {
-		Spec struct {
-			DriftDetection *struct {
-				Interval json.RawMessage `json:"interval"`
-			} `json:"driftDetection"`
-		} `json:"spec"`
+// badDuration reports whether the duration at path is what broke decoding:
+// metav1.Duration fails the whole document on a bad duration.
+func badDuration(data []byte, path ...string) bool {
+	raw := json.RawMessage(data)
+	for _, key := range path {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			return false
+		}
+		if raw = obj[key]; len(raw) == 0 {
+			return false
+		}
 	}
-	if json.Unmarshal(data, &probe) != nil || probe.Spec.DriftDetection == nil {
-		return false
-	}
-	raw := probe.Spec.DriftDetection.Interval
-	if len(raw) == 0 || string(raw) == "null" {
+	if string(raw) == "null" {
 		return false
 	}
 	var d metav1.Duration

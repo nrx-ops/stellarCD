@@ -18,9 +18,9 @@ limitations under the License.
 // runs as a manager.Runnable so it inherits the manager's ServiceAccount
 // credentials, RBAC and shutdown signal, which keeps the browser off the
 // Kubernetes API server entirely. Reads are always served; writes (creating,
-// editing and deleting Astrals, raising and steering Flares) only when the
-// operator was started with --admin-api-writes, because the API is
-// unauthenticated.
+// editing and deleting Galaxies, Astrals and credential Secrets, raising and
+// steering Flares) only when the operator was started with --admin-api-writes,
+// because the API is unauthenticated.
 package adminapi
 
 import (
@@ -145,12 +145,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/universes", s.handleListUniverses)
 	mux.HandleFunc("GET /api/v1/galaxies", s.handleListGalaxies)
 	mux.HandleFunc("GET /api/v1/astrals", s.handleListAstrals)
+	mux.HandleFunc("GET /api/v1/galaxies/{namespace}/{name}", s.handleGetGalaxy)
 	mux.HandleFunc("GET /api/v1/astrals/{namespace}/{name}", s.handleGetAstral)
 	mux.HandleFunc("GET /api/v1/astrals/{namespace}/{name}/flares", s.handleListAstralFlares)
 	mux.HandleFunc("GET /api/v1/flares/{namespace}/{name}", s.handleGetFlare)
 	mux.HandleFunc("GET /api/v1/flares/{namespace}/{name}/logs", s.handleFlareLogs)
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/secrets", s.handleListSecretNames)
+	// TODO(spec): the admin API must be authenticated and served over TLS
+	// before Secret values may travel through it outside a local cluster
+	// (decision of the product owner, 18/10/2026). Until then the credentials
+	// routes take values in plain HTTP bodies and only ever send key names back.
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/credentials", s.handleListCredentials)
 
+	mux.HandleFunc("POST /api/v1/galaxies", s.writes(s.handleCreateGalaxy))
+	mux.HandleFunc("PUT /api/v1/galaxies/{namespace}/{name}", s.writes(s.handleUpdateGalaxy))
+	mux.HandleFunc("DELETE /api/v1/galaxies/{namespace}/{name}", s.writes(s.handleDeleteGalaxy))
 	mux.HandleFunc("POST /api/v1/astrals", s.writes(s.handleCreateAstral))
 	mux.HandleFunc("PUT /api/v1/astrals/{namespace}/{name}", s.writes(s.handleUpdateAstral))
 	mux.HandleFunc("DELETE /api/v1/astrals/{namespace}/{name}", s.writes(s.handleDeleteAstral))
@@ -158,6 +167,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/flares/{namespace}/{name}/cancel", s.writes(s.handleCancelFlare))
 	mux.HandleFunc("POST /api/v1/flares/{namespace}/{name}/approve", s.writes(s.handleApproveFlare))
 	mux.HandleFunc("POST /api/v1/flares/{namespace}/{name}/confirm-destroy", s.writes(s.handleConfirmDestroy))
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/credentials", s.writes(s.handleCreateCredential))
+	mux.HandleFunc("PUT /api/v1/namespaces/{namespace}/credentials/{name}", s.writes(s.handleUpdateCredential))
+	mux.HandleFunc("DELETE /api/v1/namespaces/{namespace}/credentials/{name}", s.writes(s.handleDeleteCredential))
 	return mux
 }
 

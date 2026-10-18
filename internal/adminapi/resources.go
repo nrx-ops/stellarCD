@@ -41,10 +41,13 @@ const (
 	msgLogsNotStarted = "The Job has not started yet."
 )
 
+// secretTypeHelmRelease is the type of the Secrets Helm stores releases in.
+const secretTypeHelmRelease corev1.SecretType = "helm.sh/release.v1"
+
 // Secret types that are never credentials a user would pick for an Astral.
 var hiddenSecretTypes = []corev1.SecretType{
 	corev1.SecretTypeServiceAccountToken,
-	"helm.sh/release.v1",
+	secretTypeHelmRelease,
 }
 
 // LogReader reads the tail of a Job's runner log. It returns
@@ -214,15 +217,9 @@ func (s *Server) handleListSecretNames(w http.ResponseWriter, r *http.Request) {
 	}
 	names := make([]string, 0, len(list.Items))
 	for i := range list.Items {
-		if slices.Contains(hiddenSecretTypes, list.Items[i].Type) {
-			continue
+		if listedSecret(&list.Items[i]) {
+			names = append(names, list.Items[i].Name)
 		}
-		// The controller mints per-Job Secrets (a GitHub App installation
-		// token, for instance). They expire with their Job: never offer them.
-		if list.Items[i].Labels[corev1alpha1.LabelManagedBy] == corev1alpha1.ManagedByValue {
-			continue
-		}
-		names = append(names, list.Items[i].Name)
 	}
 	slices.Sort(names)
 	s.writeJSON(w, r, names)

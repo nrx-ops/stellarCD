@@ -38,14 +38,17 @@ Dashboard:
 {{- if .Values.controller.adminApi.writes }}
 
 Admin API writes are ENABLED (controller.adminApi.writes=true): anyone who can
-reach the admin API can create, edit and delete Astrals and start, approve,
-confirm or cancel Flares, including applies. The API is unauthenticated, so
-treat access to it like a kubeconfig that can change your infrastructure.
+reach the admin API can create, edit and delete Galaxies and Astrals, create,
+replace and delete Secrets in Universe namespaces (credential values travel in
+plain HTTP), and start, approve, confirm or cancel Flares, including applies.
+Secret values are never sent back, only key names. The API is unauthenticated,
+so treat access to it like a kubeconfig that can change your infrastructure.
 {{- else }}
 
 Admin API writes are disabled: the dashboard is read-only. Set
-controller.adminApi.writes=true to let it edit Astrals and drive Flares; the
-admin API is unauthenticated, so only do so behind an authenticating proxy.
+controller.adminApi.writes=true to let it manage Galaxies, Astrals and
+credential Secrets and drive Flares; the admin API is unauthenticated, so only
+do so behind an authenticating proxy.
 {{- end }}
 {{- end }}
 
