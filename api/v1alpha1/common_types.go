@@ -298,6 +298,7 @@ type VCSRepository struct {
 // EnvSecretRef projects a Secret into the executor environment. It is the only
 // supported way to pass sensitive Terraform inputs: values never transit
 // through the spec, the status or the logs.
+// +kubebuilder:validation:XValidation:rule="!has(self.envName) || has(self.key)",message="envName needs key"
 type EnvSecretRef struct {
 	// Name is the Secret name, resolved in the object's own namespace.
 	// +kubebuilder:validation:MinLength=1
@@ -314,6 +315,12 @@ type EnvSecretRef struct {
 	// +kubebuilder:default="TF_VAR_"
 	// +optional
 	EnvPrefix *string `json:"envPrefix,omitempty"`
+	// EnvName names the environment variable that receives Key, ignoring
+	// EnvPrefix, e.g. VAULT_TOKEN for a Secret whose key is "token". Only
+	// valid with Key.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	// +optional
+	EnvName string `json:"envName,omitempty"`
 }
 
 // DefaultEnvPrefix is the prefix used when envPrefix is not set.
@@ -325,6 +332,15 @@ func (r EnvSecretRef) Prefix() string {
 		return DefaultEnvPrefix
 	}
 	return *r.EnvPrefix
+}
+
+// VarName returns the environment variable that receives Key: EnvName when
+// set, else the prefix followed by the key.
+func (r EnvSecretRef) VarName() string {
+	if r.EnvName != "" {
+		return r.EnvName
+	}
+	return r.Prefix() + r.Key
 }
 
 // ObjectRefStatus is a lightweight back-reference recorded on a status. It is

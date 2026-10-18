@@ -194,6 +194,13 @@ spec:
                     supported way to pass sensitive Terraform inputs: values never transit
                     through the spec, the status or the logs.
                   properties:
+                    envName:
+                      description: |-
+                        EnvName names the environment variable that receives Key, ignoring
+                        EnvPrefix, e.g. VAULT_TOKEN for a Secret whose key is "token". Only
+                        valid with Key.
+                      pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                      type: string
                     envPrefix:
                       default: TF_VAR_
                       description: |-
@@ -216,6 +223,9 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: envName needs key
+                    rule: '!has(self.envName) || has(self.key)'
                 type: array
               terragrunt:
                 description: Terragrunt puts Terragrunt in front of the engine.

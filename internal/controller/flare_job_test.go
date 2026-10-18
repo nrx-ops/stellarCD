@@ -92,3 +92,44 @@ func TestBuildJobBackendSecret(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildJobSecretEnvName checks that a single key can land under any
+// variable name (envName), the way a Vault token needs to be VAULT_TOKEN.
+func TestBuildJobSecretEnvName(t *testing.T) {
+	empty := ""
+	astral := &corev1alpha1.Astral{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: "tenant"},
+		Spec: corev1alpha1.AstralSpec{Secrets: []corev1alpha1.EnvSecretRef{
+			{Name: "vault", Key: "token", EnvName: "VAULT_TOKEN"},
+			{Name: "db", Key: "password"},
+			{Name: "cloud", EnvPrefix: &empty},
+		}},
+	}
+	flare := &corev1alpha1.Flare{
+		ObjectMeta: metav1.ObjectMeta{Name: "network-plan-1", Namespace: "tenant"},
+		Spec:       corev1alpha1.FlareSpec{AstralRef: "network", Action: corev1alpha1.FlareActionPlan},
+	}
+	job, err := buildJob(jobInputs{
+		flare: flare, astral: astral, galaxy: &corev1alpha1.Galaxy{}, request: &runspec.Request{}, nonce: "n",
+	}, RunnerConfig{Image: "runner:test"})
+	if err != nil {
+		t.Fatalf("buildJob: %v", err)
+	}
+
+	container := job.Spec.Template.Spec.Containers[0]
+	refs := map[string]string{}
+	for _, e := range container.Env {
+		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			refs[e.Name] = e.ValueFrom.SecretKeyRef.Name + "/" + e.ValueFrom.SecretKeyRef.Key
+		}
+	}
+	if refs["VAULT_TOKEN"] != "vault/token" {
+		t.Errorf("VAULT_TOKEN comes from %q, want vault/token", refs["VAULT_TOKEN"])
+	}
+	if refs["TF_VAR_password"] != "db/password" {
+		t.Errorf("TF_VAR_password comes from %q, want db/password", refs["TF_VAR_password"])
+	}
+	if len(container.EnvFrom) != 1 || container.EnvFrom[0].SecretRef.Name != "cloud" || container.EnvFrom[0].Prefix != "" {
+		t.Errorf("envFrom = %+v, want the whole cloud Secret without prefix", container.EnvFrom)
+	}
+}

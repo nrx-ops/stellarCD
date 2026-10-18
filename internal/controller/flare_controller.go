@@ -413,7 +413,7 @@ func (r *FlareReconciler) secretEnvNames(
 	}
 	for _, ref := range astral.Spec.Secrets {
 		if ref.Key != "" {
-			names = append(names, ref.Prefix()+ref.Key)
+			names = append(names, ref.VarName())
 			continue
 		}
 		if err := keysOf(ref.Name, ref.Prefix()); err != nil {

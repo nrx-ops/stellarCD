@@ -140,7 +140,7 @@ func buildJob(in jobInputs, cfg RunnerConfig) (*batchv1.Job, error) {
 	for _, ref := range in.astral.Spec.Secrets {
 		if ref.Key != "" {
 			env = append(env, corev1.EnvVar{
-				Name: ref.Prefix() + ref.Key,
+				Name: ref.VarName(),
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
 					Key:                  ref.Key,
