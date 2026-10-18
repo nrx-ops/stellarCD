@@ -39,6 +39,7 @@ export default function AstralList() {
   }, [inGalaxy, query, state])
 
   const newLink = `/u/${universe}/new${galaxy ? `?galaxy=${galaxy}` : ''}`
+  const importLink = `/u/${universe}/import${galaxy ? `?galaxy=${galaxy}` : ''}`
 
   if (isLoading) return <Loading />
   if (error) return <ErrorState error={error} />
@@ -48,7 +49,10 @@ export default function AstralList() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900">Astrals</h1>
         {inGalaxy.length > 0 && writes.enabled && (
-          <Link to={newLink}><Button kind="primary">New Astral</Button></Link>
+          <div className="flex gap-2">
+            <Link to={importLink}><Button>Import from a repository</Button></Link>
+            <Link to={newLink}><Button kind="primary">New Astral</Button></Link>
+          </div>
         )}
       </div>
 
@@ -56,7 +60,12 @@ export default function AstralList() {
         <EmptyState
           title="Declare your first Astral"
           text="An Astral watches an IaC folder in your Git repository."
-          action={writes.enabled ? <Link to={newLink}><Button kind="primary">New Astral</Button></Link> : undefined}
+          action={writes.enabled ? (
+            <div className="flex gap-2">
+              <Link to={importLink}><Button>Import from a repository</Button></Link>
+              <Link to={newLink}><Button kind="primary">New Astral</Button></Link>
+            </div>
+          ) : undefined}
         />
       ) : (
         <>

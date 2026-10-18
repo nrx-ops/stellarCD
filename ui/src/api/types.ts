@@ -319,3 +319,29 @@ export interface FlareLog {
 export interface AdminConfig {
   writesEnabled: boolean
 }
+
+// --- Repository scan ------------------------------------------------------
+
+export interface ScanRequest {
+  url: string
+  branch?: string
+  path?: string
+  secret?: string
+  galaxy?: string
+  terragrunt?: boolean
+  include?: string[]
+  exclude?: string[]
+  stripPrefix?: string
+}
+
+export interface ScannedModule {
+  path: string
+  marker: string
+  name: string
+  existing?: boolean
+}
+
+export interface ScanResult {
+  modules: ScannedModule[]
+  truncated?: boolean
+}

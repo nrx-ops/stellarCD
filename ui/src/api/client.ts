@@ -3,6 +3,8 @@ import type {
   AdminConfig,
   Astral,
   CredentialInfo,
+  ScanRequest,
+  ScanResult,
   Flare,
   FlareLog,
   Galaxy,
@@ -146,4 +148,10 @@ export async function replaceCredential(namespace: string, name: string, data: R
 
 export async function deleteCredential(namespace: string, name: string): Promise<void> {
   await http.delete(`/namespaces/${namespace}/credentials/${name}`)
+}
+
+// scanRepository lists the root modules or Terragrunt units of a repository,
+// without creating anything.
+export async function scanRepository(namespace: string, req: ScanRequest): Promise<ScanResult> {
+  return (await http.post(`/namespaces/${namespace}/scan`, req)).data
 }

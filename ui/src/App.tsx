@@ -5,6 +5,7 @@ import { EmptyState, ErrorState, Loading } from './components/ui'
 import AstralDetail from './pages/AstralDetail'
 import AstralList from './pages/AstralList'
 import FlareDetail from './pages/FlareDetail'
+import ImportAstrals from './pages/ImportAstrals'
 import NewAstral from './pages/NewAstral'
 import Credentials from './pages/admin/Credentials'
 import GalaxyEdit from './pages/admin/GalaxyEdit'
@@ -19,6 +20,7 @@ export default function App() {
       <Route path="/" element={<Home />} />
       <Route path="/u/:universe" element={<Layout><AstralList /></Layout>} />
       <Route path="/u/:universe/new" element={<Layout><NewAstral /></Layout>} />
+      <Route path="/u/:universe/import" element={<Layout><ImportAstrals /></Layout>} />
       <Route path="/u/:universe/admin" element={<Navigate to="galaxies" replace />} />
       <Route path="/u/:universe/admin/galaxies" element={<Layout><Galaxies /></Layout>} />
       <Route path="/u/:universe/admin/galaxies/new" element={<Layout><GalaxyEdit /></Layout>} />

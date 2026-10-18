@@ -76,6 +76,7 @@ English.
 | --- | --- |
 | `/u/<universe>[/g/<galaxy>]` | Astral list, filtered by Galaxy |
 | `/u/<universe>/new` | New Astral |
+| `/u/<universe>/import` | Import Astrals from the modules or units of a repository |
 | `/u/<universe>/g/<galaxy>/a/<astral>/<tab>` | Astral detail: `overview`, `drift`, `history`, `configuration` |
 | `/u/<universe>/g/<galaxy>/a/<astral>/flares/<flare>` | Flare detail and pod logs |
 | `/u/<universe>/admin/galaxies[/new\|/<galaxy>]` | Admin: Galaxies, their defaults, backend and discovery |
@@ -106,4 +107,5 @@ Statuses refresh every 3 seconds by polling the admin API.
 | GET, PUT, DELETE | `/api/v1/galaxies/{ns}/{name}` | Read, update or delete a Galaxy (delete refused while it has Astrals) |
 | POST | `/api/v1/galaxies` | Create a Galaxy in its Universe's namespace |
 | GET, POST | `/api/v1/namespaces/{ns}/credentials` | List Secrets with their usage (no values), create one |
+| POST | `/api/v1/namespaces/{ns}/scan` | List the root modules or Terragrunt units of a GitHub repository (read-only) |
 | PUT, DELETE | `/api/v1/namespaces/{ns}/credentials/{name}` | Replace every value of a Secret, delete an unused one |

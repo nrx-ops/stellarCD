@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, createFlare } from '../api/client'
 import { useAstrals, useCreateAstral, useGalaxies, useSecrets } from '../api/hooks'
 import AstralForm, { astralFromForm, emptyForm, validateForm, YamlDialog, type FormErrors, type FormState } from '../components/AstralForm'
@@ -75,7 +75,12 @@ export default function NewAstral() {
     <div className="max-w-5xl">
       <Breadcrumb items={[{ label: universe!, to: `/u/${universe}` }, { label: 'New Astral' }]} />
       <h1 className="text-xl font-semibold text-slate-900">New Astral</h1>
-      <p className="mt-1 text-sm text-slate-500">Empty fields inherit values from the Galaxy</p>
+      <p className="mt-1 text-sm text-slate-500">
+        Empty fields inherit values from the Galaxy.{' '}
+        <Link to={`/u/${universe}/import${form.galaxy ? `?galaxy=${form.galaxy}` : ''}`} className="font-medium text-indigo-600 hover:underline">
+          Import several folders from a repository
+        </Link>
+      </p>
 
       <form className="mt-6" onSubmit={(e) => { e.preventDefault(); void submit() }}>
         <AstralForm value={form} onChange={setForm} errors={errors} galaxies={galaxiesQ.data ?? []}
