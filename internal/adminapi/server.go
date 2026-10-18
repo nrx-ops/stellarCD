@@ -156,6 +156,9 @@ func (s *Server) Handler() http.Handler {
 	// (decision of the product owner, 18/10/2026). Until then the credentials
 	// routes take values in plain HTTP bodies and only ever send key names back.
 	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/credentials", s.handleListCredentials)
+	// Scanning reads a repository with a Secret of the namespace but writes
+	// nothing, so it is not behind the writes switch.
+	mux.HandleFunc("POST /api/v1/namespaces/{namespace}/scan", s.handleScanRepository)
 
 	mux.HandleFunc("POST /api/v1/galaxies", s.writes(s.handleCreateGalaxy))
 	mux.HandleFunc("PUT /api/v1/galaxies/{namespace}/{name}", s.writes(s.handleUpdateGalaxy))
