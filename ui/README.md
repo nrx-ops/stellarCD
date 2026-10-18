@@ -78,6 +78,8 @@ English.
 | `/u/<universe>/new` | New Astral |
 | `/u/<universe>/g/<galaxy>/a/<astral>/<tab>` | Astral detail: `overview`, `drift`, `history`, `configuration` |
 | `/u/<universe>/g/<galaxy>/a/<astral>/flares/<flare>` | Flare detail and pod logs |
+| `/u/<universe>/admin/galaxies[/new\|/<galaxy>]` | Admin: Galaxies, their defaults, backend and discovery |
+| `/u/<universe>/admin/credentials` | Admin: Secrets of the Universe namespace (values never shown) |
 
 Statuses refresh every 3 seconds by polling the admin API.
 
@@ -101,3 +103,7 @@ Statuses refresh every 3 seconds by polling the admin API.
 | POST | `/api/v1/flares/{ns}/{name}/cancel` | Cancel a Flare |
 | POST | `/api/v1/flares/{ns}/{name}/approve` | Approve or reject a Flare |
 | POST | `/api/v1/flares/{ns}/{name}/confirm-destroy` | Confirm the destructions of an apply |
+| GET, PUT, DELETE | `/api/v1/galaxies/{ns}/{name}` | Read, update or delete a Galaxy (delete refused while it has Astrals) |
+| POST | `/api/v1/galaxies` | Create a Galaxy in its Universe's namespace |
+| GET, POST | `/api/v1/namespaces/{ns}/credentials` | List Secrets with their usage (no values), create one |
+| PUT, DELETE | `/api/v1/namespaces/{ns}/credentials/{name}` | Replace every value of a Secret, delete an unused one |

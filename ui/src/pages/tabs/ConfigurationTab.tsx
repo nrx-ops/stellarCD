@@ -102,7 +102,21 @@ export default function ConfigurationTab({ astral, galaxy, universe }: TabProps)
               value={s.backendSecretRef?.name ?? galaxy.spec.backendConfig?.secretRef?.name ?? 'None'}
               from={s.backendSecretRef ? own : galaxy.spec.backendConfig?.secretRef ? inherited : undefined}
             />
-            <Row label="Cloud credentials" value={s.secrets?.map((x) => x.name).join(', ') || 'None'} from={s.secrets?.length ? own : undefined} />
+            <Row
+              label="Environment"
+              value={s.secrets?.length ? (
+                <ul className="space-y-0.5">
+                  {s.secrets.map((x, i) => (
+                    <li key={i}>
+                      {x.key
+                        ? <><Mono>{x.envName || (x.envPrefix ?? 'TF_VAR_') + x.key}</Mono> <span className="text-slate-400">←</span> <Mono>{x.name}/{x.key}</Mono></>
+                        : <><Mono>{x.name}</Mono> <span className="text-slate-400">(every key{(x.envPrefix ?? 'TF_VAR_') ? `, prefixed ${x.envPrefix ?? 'TF_VAR_'}` : ''})</span></>}
+                    </li>
+                  ))}
+                </ul>
+              ) : 'None'}
+              from={s.secrets?.length ? own : undefined}
+            />
           </Group>
           <Group title="Engine">
             <Row label="Engine" value={(s.engine ?? 'Terraform').toLowerCase()} from={own} />

@@ -6,6 +6,9 @@ import AstralDetail from './pages/AstralDetail'
 import AstralList from './pages/AstralList'
 import FlareDetail from './pages/FlareDetail'
 import NewAstral from './pages/NewAstral'
+import Credentials from './pages/admin/Credentials'
+import GalaxyEdit from './pages/admin/GalaxyEdit'
+import Galaxies from './pages/admin/Galaxies'
 
 // Routes follow the URL scheme proposed on the "Navigation" page
 // ([À CONFIRMER]): /u/<universe>/g/<galaxy>/a/<astral>/<tab>, so a link to any
@@ -16,6 +19,11 @@ export default function App() {
       <Route path="/" element={<Home />} />
       <Route path="/u/:universe" element={<Layout><AstralList /></Layout>} />
       <Route path="/u/:universe/new" element={<Layout><NewAstral /></Layout>} />
+      <Route path="/u/:universe/admin" element={<Navigate to="galaxies" replace />} />
+      <Route path="/u/:universe/admin/galaxies" element={<Layout><Galaxies /></Layout>} />
+      <Route path="/u/:universe/admin/galaxies/new" element={<Layout><GalaxyEdit /></Layout>} />
+      <Route path="/u/:universe/admin/galaxies/:galaxy" element={<Layout><GalaxyEdit /></Layout>} />
+      <Route path="/u/:universe/admin/credentials" element={<Layout><Credentials /></Layout>} />
       <Route path="/u/:universe/g/:galaxy" element={<Layout><AstralList /></Layout>} />
       <Route path="/u/:universe/g/:galaxy/a/:astral/flares/:flare" element={<Layout><FlareDetail /></Layout>} />
       <Route path="/u/:universe/g/:galaxy/a/:astral/:tab?" element={<Layout><AstralDetail /></Layout>} />

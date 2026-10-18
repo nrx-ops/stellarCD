@@ -55,6 +55,7 @@ export interface EnvSecretRef {
   name: string
   key?: string
   envPrefix?: string
+  envName?: string
 }
 
 // --- Universe -------------------------------------------------------------
@@ -88,25 +89,79 @@ export interface BackendConfig {
   secretRef?: SecretRef
 }
 
+export type ApprovalPolicy = 'Auto' | 'Manual' | 'RequiresReview'
+
+export interface DiscoveredAstralTemplate {
+  engine?: Engine
+  engineVersion?: string
+  terragrunt?: TerragruntSpec
+  autoApply?: boolean
+  planOnPR?: boolean
+  applyOnMerge?: boolean
+  labels?: Record<string, string>
+  driftDetection?: DriftDetectionSpec
+}
+
+export interface DiscoverySpec {
+  enabled?: boolean
+  repository: VCSRepository
+  interval?: string
+  include?: string[]
+  exclude?: string[]
+  stripPrefix?: string
+  maxAstrals?: number
+  prune?: boolean
+  template?: DiscoveredAstralTemplate
+}
+
+export interface GalaxySpec {
+  universeRef: string
+  displayName?: string
+  description?: string
+  teamEmail?: string
+  labels?: Record<string, string>
+  defaultVCSProvider?: 'GitHub' | 'GitLab' | 'Gitea'
+  defaultVCSURL?: string
+  vcsSecretRef?: SecretRef
+  backendConfig?: BackendConfig
+  approvalPolicy?: ApprovalPolicy
+  archived?: boolean
+  discovery?: DiscoverySpec
+}
+
 export interface Galaxy {
+  apiVersion?: string
+  kind?: string
   metadata: ObjectMeta
-  spec: {
-    universeRef: string
-    displayName?: string
-    description?: string
-    defaultVCSProvider?: string
-    defaultVCSURL?: string
-    vcsSecretRef?: SecretRef
-    backendConfig?: BackendConfig
-    approvalPolicy?: 'Auto' | 'Manual' | 'RequiresReview'
-    archived?: boolean
-  }
+  spec: GalaxySpec
   status?: {
     phase?: string
     astralCount?: number
     flareCount?: number
+    discoveredAstrals?: number
+    lastDiscoveryTime?: string
     conditions?: Condition[]
   }
+}
+
+// --- Credentials ----------------------------------------------------------
+
+export type CredentialKind = 'GitHubApp' | 'SSHKey' | 'Token' | 'BasicAuth' | 'GCS' | 'Vault' | 'Generic'
+
+export interface CredentialUse {
+  kind: 'Galaxy' | 'Astral'
+  name: string
+  role: 'Git' | 'State' | 'Discovery' | 'Env'
+}
+
+// CredentialInfo describes a Secret without its values: the admin API never
+// sends them back.
+export interface CredentialInfo {
+  name: string
+  kind: CredentialKind
+  keys: string[]
+  createdAt?: string
+  usedBy: CredentialUse[]
 }
 
 // --- Astral ---------------------------------------------------------------

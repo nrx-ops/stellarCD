@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios'
 import type {
   AdminConfig,
   Astral,
+  CredentialInfo,
   Flare,
   FlareLog,
   Galaxy,
@@ -111,4 +112,38 @@ export async function approveFlare(namespace: string, name: string, approved: bo
 
 export async function confirmDestroy(namespace: string, name: string, confirm: string): Promise<Flare> {
   return (await http.post(`/flares/${namespace}/${name}/confirm-destroy`, { confirm })).data
+}
+
+export async function getGalaxy(namespace: string, name: string): Promise<Galaxy> {
+  return (await http.get(`/galaxies/${namespace}/${name}`)).data
+}
+
+export async function createGalaxy(galaxy: Galaxy): Promise<Galaxy> {
+  return (await http.post('/galaxies', galaxy)).data
+}
+
+export async function updateGalaxy(galaxy: Galaxy): Promise<Galaxy> {
+  const { namespace, name } = galaxy.metadata
+  return (await http.put(`/galaxies/${namespace}/${name}`, galaxy)).data
+}
+
+export async function deleteGalaxy(namespace: string, name: string): Promise<void> {
+  await http.delete(`/galaxies/${namespace}/${name}`)
+}
+
+export async function listCredentials(namespace: string): Promise<CredentialInfo[]> {
+  return (await http.get(`/namespaces/${namespace}/credentials`)).data ?? []
+}
+
+// Values are sent once and never read back.
+export async function createCredential(namespace: string, name: string, data: Record<string, string>): Promise<CredentialInfo> {
+  return (await http.post(`/namespaces/${namespace}/credentials`, { name, data })).data
+}
+
+export async function replaceCredential(namespace: string, name: string, data: Record<string, string>): Promise<CredentialInfo> {
+  return (await http.put(`/namespaces/${namespace}/credentials/${name}`, { data })).data
+}
+
+export async function deleteCredential(namespace: string, name: string): Promise<void> {
+  await http.delete(`/namespaces/${namespace}/credentials/${name}`)
 }

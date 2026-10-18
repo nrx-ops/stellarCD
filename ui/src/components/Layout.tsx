@@ -67,6 +67,14 @@ function TopBar() {
             className="w-64 rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none"
           />
         </form>
+        {universe && (
+          <NavLink
+            to={`/u/${universe}/admin`}
+            className={({ isActive }) => `text-sm font-medium ${isActive ? 'text-indigo-700' : 'text-slate-600 hover:text-slate-900'}`}
+          >
+            Admin
+          </NavLink>
+        )}
         {/* Notifications: [À CONFIRMER] in the specification, not built. */}
         <span
           className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-600"

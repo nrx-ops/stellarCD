@@ -130,7 +130,7 @@ function Credentials({ astral, galaxy }: { astral: Astral; galaxy: Galaxy }) {
       <span className="font-medium text-slate-800">Credentials</span>
       {item('Git', git)}
       {item('State', state)}
-      {cloud.length > 0 && item('Cloud', cloud.join(', '))}
+      {cloud.length > 0 && item('Env', cloud.join(', '))}
     </div>
   )
 }

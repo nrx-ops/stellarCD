@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from 'react-query'
 import * as api from './client'
-import type { Astral } from './types'
+import type { Astral, Galaxy } from './types'
 
 // Statuses update live without a page reload (SCR-Liste des Astrals,
 // "Actualisation"). Polling the admin API is cheap: it reads straight from the
@@ -68,7 +68,7 @@ export function useSecrets(namespace?: string) {
 function useRefresh() {
   const qc = useQueryClient()
   return () => {
-    for (const key of ['astrals', 'astral', 'flares', 'flare', 'galaxies']) {
+    for (const key of ['astrals', 'astral', 'flares', 'flare', 'galaxies', 'galaxy', 'credentials', 'secrets']) {
       void qc.invalidateQueries(key)
     }
   }
@@ -123,4 +123,46 @@ export function useWrites(): { enabled: boolean; reason?: string } {
     return { enabled: false, reason: 'Actions are disabled on this admin API.' }
   }
   return { enabled: true }
+}
+
+export function useUniverse(name?: string) {
+  const q = useUniverses()
+  return { ...q, data: q.data?.find((u) => u.metadata.name === name) }
+}
+
+export function useGalaxyByKey(namespace?: string, name?: string) {
+  return useQuery(['galaxy', namespace, name], () => api.getGalaxy(namespace!, name!), {
+    enabled: !!namespace && !!name,
+  })
+}
+
+export function useCredentials(namespace?: string) {
+  return useQuery(['credentials', namespace], () => api.listCredentials(namespace!), {
+    enabled: !!namespace,
+    refetchInterval: 10_000,
+  })
+}
+
+export function useSaveGalaxy(creating: boolean) {
+  const refresh = useRefresh()
+  return useMutation((g: Galaxy) => (creating ? api.createGalaxy(g) : api.updateGalaxy(g)), { onSuccess: refresh })
+}
+
+export function useDeleteGalaxy() {
+  const refresh = useRefresh()
+  return useMutation((g: { namespace: string; name: string }) => api.deleteGalaxy(g.namespace, g.name), { onSuccess: refresh })
+}
+
+export function useSaveCredential(namespace: string, creating: boolean) {
+  const refresh = useRefresh()
+  return useMutation(
+    (v: { name: string; data: Record<string, string> }) =>
+      creating ? api.createCredential(namespace, v.name, v.data) : api.replaceCredential(namespace, v.name, v.data),
+    { onSuccess: refresh },
+  )
+}
+
+export function useDeleteCredential(namespace: string) {
+  const refresh = useRefresh()
+  return useMutation((name: string) => api.deleteCredential(namespace, name), { onSuccess: refresh })
 }

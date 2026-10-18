@@ -1,7 +1,7 @@
-import { ReactNode } from 'react'
 import { stringify } from 'yaml'
-import type { Astral, Engine, Galaxy, TerragruntMode } from '../api/types'
+import type { Astral, Engine, EnvSecretRef, Galaxy, TerragruntMode } from '../api/types'
 import { parseDuration } from '../lib/format'
+import { Field, Section, SecretSelect, cls } from './form'
 import { Mono, Modal } from './ui'
 
 // FormState holds the fields of SCR-Création d'un Astral, as the user types
@@ -20,8 +20,19 @@ export interface FormState {
   terragruntMode: TerragruntMode
   interval: string
   backendSecret: string
-  cloudSecrets: string[]
+  envSecrets: EnvRow[]
   autoApply: boolean
+}
+
+// EnvRow projects a Secret into the run's environment: every key under its
+// own name, or one key under the variable name the tool expects.
+export interface EnvRow {
+  secret: string
+  key: string
+  variable: string
+  // original keeps a reference the form cannot express (a TF_VAR_ prefix set
+  // in YAML, for instance) as long as the row is left untouched.
+  original?: EnvSecretRef
 }
 
 export type FormErrors = Partial<Record<keyof FormState, string>>
@@ -31,7 +42,7 @@ export function emptyForm(galaxy = ''): FormState {
     galaxy, name: '', url: '', branch: '', path: '', gitSecret: '',
     engine: 'Terraform', engineVersion: '',
     terragrunt: false, terragruntVersion: '', terragruntMode: 'Unit',
-    interval: '', backendSecret: '', cloudSecrets: [], autoApply: false,
+    interval: '', backendSecret: '', envSecrets: [], autoApply: false,
   }
 }
 
@@ -52,7 +63,12 @@ export function formFromAstral(a: Astral, galaxy?: Galaxy): FormState {
     terragruntMode: a.spec.terragrunt?.mode ?? 'Unit',
     interval: a.spec.driftDetection?.enabled ? a.spec.driftDetection.interval ?? '' : '',
     backendSecret: a.spec.backendSecretRef?.name ?? '',
-    cloudSecrets: (a.spec.secrets ?? []).map((s) => s.name),
+    envSecrets: (a.spec.secrets ?? []).map((s) => ({
+      secret: s.name,
+      key: s.key ?? '',
+      variable: s.key ? s.envName || (s.envPrefix ?? 'TF_VAR_') + s.key : '',
+      original: s,
+    })),
     autoApply: !!a.spec.autoApply,
   }
 }
@@ -83,12 +99,7 @@ export function astralFromForm(f: FormState, galaxy: Galaxy | undefined, base?: 
       }
     : undefined
   spec.driftDetection = f.interval.trim() ? { enabled: true, interval: f.interval.trim() } : undefined
-  // Cloud credentials keep the Secret's own key names (envPrefix ""), which is
-  // what provider SDKs read: AWS_ACCESS_KEY_ID, ARM_CLIENT_ID…
-  const previous = new Map((base?.spec.secrets ?? []).map((s) => [s.name, s]))
-  spec.secrets = f.cloudSecrets.length
-    ? f.cloudSecrets.map((name) => previous.get(name) ?? { name, envPrefix: '' })
-    : undefined
+  spec.secrets = f.envSecrets.length ? f.envSecrets.filter((r) => r.secret).map(envRef) : undefined
   spec.backendSecretRef = f.backendSecret ? { name: f.backendSecret } : undefined
   spec.autoApply = f.autoApply
 
@@ -119,6 +130,22 @@ export function backendLabel(galaxy?: Galaxy): string {
   return [b.type, ...where, b.prefix && `prefix ${b.prefix}`].filter(Boolean).join(' · ')
 }
 
+// envRef turns a row into an EnvSecretRef. A whole Secret keeps the key names
+// as they are (envPrefix ""), which is what providers read: AWS_ACCESS_KEY_ID,
+// VAULT_TOKEN… A single key lands under the variable typed, or its own name.
+function envRef(r: EnvRow): EnvSecretRef {
+  const o = r.original
+  if (o && o.name === r.secret && (o.key ?? '') === r.key &&
+      r.variable === (o.key ? o.envName || (o.envPrefix ?? 'TF_VAR_') + o.key : '')) {
+    return o
+  }
+  if (!r.key) return { name: r.secret, envPrefix: '' }
+  const variable = r.variable.trim() || r.key
+  return variable === r.key ? { name: r.secret, key: r.key, envPrefix: '' } : { name: r.secret, key: r.key, envName: variable }
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 const DNS_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
 
 export function validateForm(f: FormState, galaxy: Galaxy | undefined, names: string[]): FormErrors {
@@ -133,46 +160,15 @@ export function validateForm(f: FormState, galaxy: Galaxy | undefined, names: st
   if (needsCredentials(url) && !f.gitSecret && !galaxy?.spec.vcsSecretRef) {
     e.gitSecret = 'This repository is reached over SSH: choose Git credentials'
   }
+  for (const r of f.envSecrets) {
+    if (!r.secret) e.envSecrets = 'Choose a Secret on every line, or remove the line'
+    else if (r.variable.trim() && !r.key) e.envSecrets = 'Pick a key to rename it'
+    else if ((r.variable.trim() || r.key) && !ENV_NAME.test(r.variable.trim() || r.key)) {
+      e.envSecrets = `${r.variable.trim() || r.key} is not a valid variable name: use letters, digits and _`
+    }
+  }
   if (f.interval.trim() && parseDuration(f.interval.trim()) === undefined) e.interval = 'Expected duration format: 5m, 1h'
   return e
-}
-
-// --- Fields ---------------------------------------------------------------
-
-const input =
-  'block w-full rounded-md border px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-1 disabled:bg-slate-50 disabled:text-slate-500'
-
-function Field({ label, help, error, inherited, children, required }: {
-  label: string
-  help?: ReactNode
-  error?: string
-  inherited?: string
-  children: ReactNode
-  required?: boolean
-}) {
-  return (
-    <label className="block">
-      <span className="text-sm font-medium text-slate-800">{label}{required && <span className="text-red-500"> *</span>}</span>
-      <div className="mt-1">{children}</div>
-      {inherited && !error && <span className="mt-1 block text-xs text-slate-400">Inherited: {inherited}</span>}
-      {help && !error && <span className="mt-1 block text-xs text-slate-500">{help}</span>}
-      {error && <span className="mt-1 block text-xs text-red-600">{error}</span>}
-    </label>
-  )
-}
-
-function cls(error?: string) {
-  return `${input} ${error ? 'border-red-400 focus:border-red-500 focus:ring-red-500' : 'border-slate-300 focus:border-indigo-500 focus:ring-indigo-500'}`
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <fieldset className="grid grid-cols-1 gap-5 border-t border-slate-200 py-6 md:grid-cols-[12rem_1fr]">
-      <legend className="sr-only">{title}</legend>
-      <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
-      <div className="grid max-w-2xl grid-cols-1 gap-5 sm:grid-cols-2">{children}</div>
-    </fieldset>
-  )
 }
 
 export default function AstralForm({ value, onChange, errors, galaxies, galaxy, secrets, editing }: {
@@ -244,16 +240,7 @@ export default function AstralForm({ value, onChange, errors, galaxies, galaxy, 
           </Field>
         </div>
         <div className="sm:col-span-2">
-          <Field label="Cloud credentials" help="Optional. Extra credentials for the providers: each key of the Secret becomes an environment variable">
-            <select
-              multiple
-              value={value.cloudSecrets}
-              onChange={(e) => set('cloudSecrets', [...e.target.selectedOptions].map((o) => o.value))}
-              className={`${cls()} h-24`}
-            >
-              {secrets.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </Field>
+          <EnvSecretsField rows={value.envSecrets} onChange={(rows) => set('envSecrets', rows)} secrets={secrets} error={errors.envSecrets} />
         </div>
       </Section>
 
@@ -320,38 +307,74 @@ export default function AstralForm({ value, onChange, errors, galaxies, galaxy, 
   )
 }
 
-function SecretSelect({ value, onChange, secrets, inherits, error }: {
-  value: string
-  onChange: (v: string) => void
-  secrets: string[]
-  inherits?: string
-  error?: string
-}) {
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className={cls(error)}>
-      <option value="">{inherits ? `Inherit from the Galaxy (${inherits})` : 'None'}</option>
-      {secrets.map((s) => <option key={s} value={s}>{s}</option>)}
-      {value && !secrets.includes(value) && <option value={value}>{value} (missing)</option>}
-    </select>
-  )
-}
 
-// YamlDialog shows the resource as YAML, ready to copy into Git.
-export function YamlDialog({ astral, onClose }: { astral: Astral; onClose: () => void }) {
+// YamlDialog shows a resource as YAML, ready to copy into Git.
+export function YamlDialog({ astral, kind = 'Astral', onClose }: {
+  astral: { metadata: { name: string; namespace?: string }; spec: unknown }
+  kind?: 'Astral' | 'Galaxy'
+  onClose: () => void
+}) {
   const clean = {
     apiVersion: 'core.stellarcd.io/v1alpha1',
-    kind: 'Astral',
+    kind,
     metadata: { name: astral.metadata.name, namespace: astral.metadata.namespace },
     spec: astral.spec,
   }
   const text = stringify(JSON.parse(JSON.stringify(clean)))
   return (
-    <Modal title="Astral YAML" onClose={onClose} footer={
+    <Modal title={`${kind} YAML`} onClose={onClose} footer={
       <button onClick={() => void navigator.clipboard?.writeText(text)} className="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50">
         Copy
       </button>
     }>
       <pre className="overflow-auto rounded-md bg-slate-900 p-4 text-xs leading-relaxed text-slate-100"><Mono>{text}</Mono></pre>
     </Modal>
+  )
+}
+
+// EnvSecretsField edits the Secrets projected into the run's environment:
+// provider credentials, a Vault token, any secret a tool reads from its env.
+function EnvSecretsField({ rows, onChange, secrets, error }: {
+  rows: EnvRow[]
+  onChange: (rows: EnvRow[]) => void
+  secrets: string[]
+  error?: string
+}) {
+  const update = (i: number, patch: Partial<EnvRow>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+  return (
+    <div>
+      <span className="block text-sm font-medium text-slate-800">Environment from Secrets</span>
+      <span className="mt-1 block text-xs text-slate-500">
+        Optional. A whole Secret exposes every key under its own name (AWS_ACCESS_KEY_ID, VAULT_TOKEN…).
+        Pick one key to give it another name, e.g. token → VAULT_TOKEN.
+      </span>
+      {rows.length > 0 && (
+        <div className="mt-2 grid grid-cols-[1fr_1fr_1fr_auto] gap-2 text-xs font-medium text-slate-500">
+          <span>Secret</span><span>Key</span><span>Variable</span><span />
+        </div>
+      )}
+      <div className="mt-1 space-y-2">
+        {rows.map((r, i) => (
+          <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] items-center gap-2">
+            <select value={r.secret} onChange={(e) => update(i, { secret: e.target.value })} className={cls()}>
+              <option value="">Choose…</option>
+              {secrets.map((s) => <option key={s} value={s}>{s}</option>)}
+              {r.secret && !secrets.includes(r.secret) && <option value={r.secret}>{r.secret} (missing)</option>}
+            </select>
+            <input value={r.key} onChange={(e) => update(i, { key: e.target.value })} placeholder="All keys"
+              className={`${cls()} font-mono`} />
+            <input value={r.variable} onChange={(e) => update(i, { variable: e.target.value })} disabled={!r.key}
+              placeholder={r.key || 'Same as the keys'} className={`${cls()} font-mono`} />
+            <button type="button" onClick={() => onChange(rows.filter((_, j) => j !== i))}
+              className="px-2 text-slate-400 hover:text-red-600" aria-label="Remove">✕</button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={() => onChange([...rows, { secret: '', key: '', variable: '' }])}
+        className="mt-2 text-sm font-medium text-indigo-600 hover:underline">
+        Add a Secret
+      </button>
+      {error && <span className="mt-1 block text-xs text-red-600">{error}</span>}
+    </div>
   )
 }
