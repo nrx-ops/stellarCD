@@ -1,56 +1,39 @@
-import { useState } from 'react'
-import StellarAppList from './components/StellarAppList'
-import RepositoryList from './components/RepositoryList'
-import AdminMenu from './components/AdminMenu'
+import { Navigate, Route, Routes } from 'react-router-dom'
+import { useUniverses } from './api/hooks'
+import Layout from './components/Layout'
+import { EmptyState, ErrorState, Loading } from './components/ui'
+import AstralDetail from './pages/AstralDetail'
+import AstralList from './pages/AstralList'
+import FlareDetail from './pages/FlareDetail'
+import NewAstral from './pages/NewAstral'
 
-type Tab = 'apps' | 'repositories'
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'apps', label: 'Apps' },
-  { id: 'repositories', label: 'Repositories' },
-]
-
-function App() {
-  const [tab, setTab] = useState<Tab>('apps')
-
+// Routes follow the URL scheme proposed on the "Navigation" page
+// ([À CONFIRMER]): /u/<universe>/g/<galaxy>/a/<astral>/<tab>, so a link to any
+// screen can be shared.
+export default function App() {
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200">
-        <div className="max-w-6xl mx-auto px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold">⚡</span>
-            </div>
-            <h1 className="text-2xl font-bold text-gray-900">stellarCD</h1>
-            <span className="text-gray-500 text-sm ml-2">Dashboard</span>
-          </div>
-        </div>
-
-        <nav className="max-w-6xl mx-auto px-6 flex gap-6">
-          {TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={`py-2 -mb-px border-b-2 text-sm font-medium transition-colors ${
-                tab === id
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      <main>
-        {tab === 'apps' ? <StellarAppList /> : <RepositoryList />}
-        <div className="max-w-6xl mx-auto px-6 py-4">
-          <AdminMenu />
-        </div>
-      </main>
-    </div>
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/u/:universe" element={<Layout><AstralList /></Layout>} />
+      <Route path="/u/:universe/new" element={<Layout><NewAstral /></Layout>} />
+      <Route path="/u/:universe/g/:galaxy" element={<Layout><AstralList /></Layout>} />
+      <Route path="/u/:universe/g/:galaxy/a/:astral/flares/:flare" element={<Layout><FlareDetail /></Layout>} />
+      <Route path="/u/:universe/g/:galaxy/a/:astral/:tab?" element={<Layout><AstralDetail /></Layout>} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
 
-export default App
+function Home() {
+  const { data, error, isLoading } = useUniverses()
+  if (isLoading) return <Loading />
+  if (error) return <div className="p-8"><ErrorState error={error} /></div>
+  if (!data?.length) {
+    return (
+      <div className="p-8">
+        <EmptyState title="No Universe yet" text="A platform administrator creates Universes and Galaxies before Astrals can be declared." />
+      </div>
+    )
+  }
+  return <Navigate to={`/u/${data[0]!.metadata.name}`} replace />
+}
