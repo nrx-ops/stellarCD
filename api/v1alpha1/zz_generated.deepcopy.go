@@ -142,6 +142,11 @@ func (in *AstralSpec) DeepCopyInto(out *AstralSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.BackendSecretRef != nil {
+		in, out := &in.BackendSecretRef, &out.BackendSecretRef
+		*out = new(SecretRef)
+		**out = **in
+	}
 	if in.CustomHooks != nil {
 		in, out := &in.CustomHooks, &out.CustomHooks
 		*out = new(AstralHooks)

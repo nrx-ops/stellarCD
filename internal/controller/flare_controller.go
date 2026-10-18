@@ -420,8 +420,8 @@ func (r *FlareReconciler) secretEnvNames(
 			return nil, err
 		}
 	}
-	if b := galaxy.Spec.BackendConfig; b != nil && b.SecretRef != nil {
-		if err := keysOf(b.SecretRef.Name, ""); err != nil {
+	if ref := astral.Spec.BackendSecret(&galaxy.Spec); ref != nil {
+		if err := keysOf(ref.Name, ""); err != nil {
 			return nil, err
 		}
 	}

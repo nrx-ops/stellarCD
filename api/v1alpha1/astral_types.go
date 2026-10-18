@@ -113,6 +113,11 @@ type AstralSpec struct {
 	// Secrets project Kubernetes Secrets into the executor environment.
 	// +optional
 	Secrets []EnvSecretRef `json:"secrets,omitempty"`
+	// BackendSecretRef names the Secret holding the state backend
+	// credentials, e.g. GOOGLE_CREDENTIALS for GCS. Its keys become env vars
+	// verbatim. It overrides the Galaxy's spec.backendConfig.secretRef.
+	// +optional
+	BackendSecretRef *SecretRef `json:"backendSecretRef,omitempty"`
 	// WorkspaceName is the engine workspace selected before every run.
 	// +kubebuilder:default="default"
 	// +kubebuilder:validation:MinLength=1
@@ -287,6 +292,18 @@ type AstralStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// BackendSecret returns the Secret holding the state backend credentials: the
+// Astral's own, else the Galaxy's. Nil means the run gets none.
+func (s *AstralSpec) BackendSecret(galaxy *GalaxySpec) *SecretRef {
+	if s.BackendSecretRef != nil {
+		return s.BackendSecretRef
+	}
+	if galaxy != nil && galaxy.BackendConfig != nil {
+		return galaxy.BackendConfig.SecretRef
+	}
+	return nil
 }
 
 // DriftInterval returns the configured drift-check interval, or zero when drift

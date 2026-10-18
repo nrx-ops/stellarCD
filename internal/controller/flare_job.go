@@ -153,11 +153,11 @@ func buildJob(in jobInputs, cfg RunnerConfig) (*batchv1.Job, error) {
 			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name}},
 		})
 	}
-	if b := in.galaxy.Spec.BackendConfig; b != nil && b.SecretRef != nil {
+	if ref := in.astral.Spec.BackendSecret(&in.galaxy.Spec); ref != nil {
 		// Backend credentials keep their own key names: the engine looks for
-		// AWS_ACCESS_KEY_ID and friends verbatim.
+		// GOOGLE_CREDENTIALS, AWS_ACCESS_KEY_ID and friends verbatim.
 		envFrom = append(envFrom, corev1.EnvFromSource{
-			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: b.SecretRef.Name}},
+			SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name}},
 		})
 	}
 

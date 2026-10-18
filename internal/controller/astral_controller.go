@@ -258,6 +258,11 @@ func (r *AstralReconciler) validate(
 			return err
 		}
 	}
+	if ref := astral.Spec.BackendSecretRef; ref != nil {
+		if err := checkSecret(ctx, r.Client, astral.Namespace, ref.Name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

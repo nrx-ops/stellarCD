@@ -83,6 +83,19 @@ spec:
                 description: AutoApply lets a successful Plan chain straight into
                   an Apply.
                 type: boolean
+              backendSecretRef:
+                description: |-
+                  BackendSecretRef names the Secret holding the state backend
+                  credentials, e.g. GOOGLE_CREDENTIALS for GCS. Its keys become env vars
+                  verbatim. It overrides the Galaxy's spec.backendConfig.secretRef.
+                properties:
+                  name:
+                    description: Name is the name of the referenced Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               customHooks:
                 description: CustomHooks are shell commands run around the engine
                   invocation.
