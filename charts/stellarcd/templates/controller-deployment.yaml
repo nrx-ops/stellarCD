@@ -60,6 +60,9 @@ spec:
             {{- end }}
             {{- if .Values.controller.adminApi.enabled }}
             - --admin-api-bind-address=:{{ .Values.controller.adminApi.port }}
+            {{- if .Values.controller.adminApi.writes }}
+            - --admin-api-writes
+            {{- end }}
             {{- else }}
             - --admin-api-bind-address=0
             {{- end }}

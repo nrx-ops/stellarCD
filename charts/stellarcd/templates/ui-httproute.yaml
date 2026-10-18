@@ -21,8 +21,8 @@ fallback keeps rendering offline instead of failing.
   {{- end }}
 {{- end }}
 {{/*
-As with the Ingress: the admin API behind this dashboard is unauthenticated and
-read-only. Put an authenticating filter or an ExtAuth-capable Gateway in front
+As with the Ingress: the admin API behind this dashboard is unauthenticated,
+and writable when controller.adminApi.writes is true. Put an authenticating filter or an ExtAuth-capable Gateway in front
 before routing to it from outside the cluster.
 */}}
 apiVersion: {{ $apiVersion }}

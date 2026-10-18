@@ -1,6 +1,7 @@
 {{- if and .Values.ui.enabled .Values.ui.ingress.enabled }}
 {{/*
-The admin API behind this dashboard is unauthenticated and read-only. Put an
+The admin API behind this dashboard is unauthenticated, and can change
+infrastructure when controller.adminApi.writes is true. Put an
 authenticating proxy (oauth2-proxy, your ingress controller's auth-url) in front
 of it before exposing it outside the cluster.
 */}}

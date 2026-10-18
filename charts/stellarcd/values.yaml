@@ -73,9 +73,14 @@ controller:
     enabled: true
 
   adminApi:
-    # -- Read-only HTTP API the dashboard reads cluster state through.
+    # -- HTTP API the dashboard reads cluster state through.
     enabled: true
     port: 8080
+    # -- Let the dashboard create, edit and delete Astrals and start, approve,
+    # confirm or cancel Flares (--admin-api-writes). The admin API is
+    # unauthenticated: keep this off unless the API is only reachable through
+    # an authenticating proxy or from a private cluster.
+    writes: false
     service:
       type: ClusterIP
       port: 8080

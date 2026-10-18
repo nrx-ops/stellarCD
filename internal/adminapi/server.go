@@ -14,10 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package adminapi serves the read-only HTTP API consumed by the stellarCD
-// dashboard. It runs as a manager.Runnable so it inherits the manager's
-// ServiceAccount credentials, RBAC and shutdown signal, which keeps the browser
-// off the Kubernetes API server entirely.
+// Package adminapi serves the HTTP API consumed by the stellarCD dashboard. It
+// runs as a manager.Runnable so it inherits the manager's ServiceAccount
+// credentials, RBAC and shutdown signal, which keeps the browser off the
+// Kubernetes API server entirely. Reads are always served; writes (creating,
+// editing and deleting Astrals, raising and steering Flares) only when the
+// operator was started with --admin-api-writes, because the API is
+// unauthenticated.
 package adminapi
 
 import (
@@ -36,6 +39,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	corev1alpha1 "github.com/nrx-ops/stellarCD/api/v1alpha1"
@@ -61,6 +65,16 @@ type Server struct {
 	// cluster-scoped types the manager does not watch (CRDs, Namespaces) and
 	// wants fresh data, so caching them would cost more than it saves.
 	Reader client.Reader
+	// Client performs the writes: creating, updating, patching and deleting
+	// Astrals and Flares.
+	Client client.Client
+	// Scheme resolves the owner references set on the Flares the API creates.
+	Scheme *runtime.Scheme
+	// Logs reads the runner log of a Flare's Job.
+	Logs LogReader
+	// AllowWrites enables the write routes. When false they all answer 403:
+	// the API is unauthenticated, so writing has to be an explicit choice.
+	AllowWrites bool
 	// Addr is the listen address, e.g. ":8080".
 	Addr string
 	Log  logr.Logger
@@ -126,6 +140,24 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/stellarapps/{namespace}/{name}", s.handleGetStellarApp)
 	mux.HandleFunc("GET /api/v1/stellarapps/{namespace}/{name}/events", s.handleListEvents)
 	mux.HandleFunc("GET /api/v1/repositories", s.handleListRepositories)
+
+	mux.HandleFunc("GET /api/v1/config", s.handleConfig)
+	mux.HandleFunc("GET /api/v1/universes", s.handleListUniverses)
+	mux.HandleFunc("GET /api/v1/galaxies", s.handleListGalaxies)
+	mux.HandleFunc("GET /api/v1/astrals", s.handleListAstrals)
+	mux.HandleFunc("GET /api/v1/astrals/{namespace}/{name}", s.handleGetAstral)
+	mux.HandleFunc("GET /api/v1/astrals/{namespace}/{name}/flares", s.handleListAstralFlares)
+	mux.HandleFunc("GET /api/v1/flares/{namespace}/{name}", s.handleGetFlare)
+	mux.HandleFunc("GET /api/v1/flares/{namespace}/{name}/logs", s.handleFlareLogs)
+	mux.HandleFunc("GET /api/v1/namespaces/{namespace}/secrets", s.handleListSecretNames)
+
+	mux.HandleFunc("POST /api/v1/astrals", s.writes(s.handleCreateAstral))
+	mux.HandleFunc("PUT /api/v1/astrals/{namespace}/{name}", s.writes(s.handleUpdateAstral))
+	mux.HandleFunc("DELETE /api/v1/astrals/{namespace}/{name}", s.writes(s.handleDeleteAstral))
+	mux.HandleFunc("POST /api/v1/astrals/{namespace}/{name}/flares", s.writes(s.handleCreateFlare))
+	mux.HandleFunc("POST /api/v1/flares/{namespace}/{name}/cancel", s.writes(s.handleCancelFlare))
+	mux.HandleFunc("POST /api/v1/flares/{namespace}/{name}/approve", s.writes(s.handleApproveFlare))
+	mux.HandleFunc("POST /api/v1/flares/{namespace}/{name}/confirm-destroy", s.writes(s.handleConfirmDestroy))
 	return mux
 }
 
@@ -317,21 +349,70 @@ func (s *Server) writeJSON(w http.ResponseWriter, r *http.Request, payload any) 
 	}
 }
 
+// errorBody is the JSON shape of every error answer. Field is the JSON path of
+// the offending input, when the error is about one field.
+type errorBody struct {
+	Error string `json:"error"`
+	Field string `json:"field,omitempty"`
+}
+
 // writeError maps an API error to a status code without echoing internals back
-// to the browser; the detail goes to the operator log instead.
+// to the browser; the detail goes to the operator log instead. msg must be a
+// sentence a dashboard user can read.
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, msg string) {
 	status := http.StatusInternalServerError
+	body := errorBody{Error: msg}
 	switch {
 	case apierrors.IsNotFound(err):
 		status = http.StatusNotFound
 	case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
 		status = http.StatusForbidden
+	case apierrors.IsConflict(err), apierrors.IsAlreadyExists(err):
+		status = http.StatusConflict
+	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
+		// Schema and CEL validation messages describe the request the user
+		// just sent, never cluster internals, so they are worth showing.
+		status = http.StatusBadRequest
+		body.Field, body.Error = invalidCause(err, msg)
 	}
 
 	s.Log.Error(err, msg, "path", r.URL.Path, "status", status)
+	s.writeStatus(w, r, status, body)
+}
+
+// invalidCause extracts the first field-level cause of an Invalid error.
+func invalidCause(err error, fallback string) (string, string) {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return "", fallback
+	}
+	details := status.Status().Details
+	if details == nil {
+		return "", fallback
+	}
+	for _, cause := range details.Causes {
+		if cause.Field == "" {
+			continue
+		}
+		msg := cause.Message
+		if msg == "" {
+			msg = "This value is not valid."
+		}
+		return cause.Field, msg
+	}
+	return "", fallback
+}
+
+// fail answers a request the API itself refuses, with no underlying error.
+func (s *Server) fail(w http.ResponseWriter, r *http.Request, status int, field, msg string) {
+	s.writeStatus(w, r, status, errorBody{Error: msg, Field: field})
+}
+
+// writeStatus writes a JSON payload with an explicit status code.
+func (s *Server) writeStatus(w http.ResponseWriter, r *http.Request, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
-		s.Log.Error(err, "Failed to encode admin API error response", "path", r.URL.Path)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		s.Log.Error(err, "Failed to encode admin API response", "path", r.URL.Path)
 	}
 }

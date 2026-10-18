@@ -34,6 +34,21 @@ Dashboard:
   them to anyone you would not hand a read-only kubeconfig.
 {{- end }}
 
+{{- if .Values.controller.adminApi.enabled }}
+{{- if .Values.controller.adminApi.writes }}
+
+Admin API writes are ENABLED (controller.adminApi.writes=true): anyone who can
+reach the admin API can create, edit and delete Astrals and start, approve,
+confirm or cancel Flares, including applies. The API is unauthenticated, so
+treat access to it like a kubeconfig that can change your infrastructure.
+{{- else }}
+
+Admin API writes are disabled: the dashboard is read-only. Set
+controller.adminApi.writes=true to let it edit Astrals and drive Flares; the
+admin API is unauthenticated, so only do so behind an authenticating proxy.
+{{- end }}
+{{- end }}
+
 {{- if .Values.controller.metrics.enabled }}
 
 Metrics are served on :{{ .Values.controller.metrics.port }}{{ if .Values.controller.metrics.secure }} over HTTPS, gated by TokenReview/SubjectAccessReview.

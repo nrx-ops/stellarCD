@@ -71,6 +71,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var adminAPIAddr string
+	var adminAPIWrites bool
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var showVersion bool
@@ -81,6 +82,9 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&adminAPIAddr, "admin-api-bind-address", ":8080",
 		"The address the dashboard admin API binds to. Set to 0 to disable it.")
+	flag.BoolVar(&adminAPIWrites, "admin-api-writes", false,
+		"Let the dashboard admin API create, edit and delete Astrals and start, approve or cancel Flares. "+
+			"The admin API is unauthenticated: enable this only behind an authenticating proxy or on a private cluster.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -295,9 +299,16 @@ func main() {
 		adminServer := &adminapi.Server{
 			// GetAPIReader bypasses the manager cache so the dashboard does not
 			// force cluster-wide watches on CRDs, Namespaces and Events.
-			Reader: mgr.GetAPIReader(),
-			Addr:   adminAPIAddr,
-			Log:    ctrl.Log.WithName("admin-api"),
+			Reader:      mgr.GetAPIReader(),
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			Logs:        &controller.ClientsetLogReader{Clientset: clientset},
+			AllowWrites: adminAPIWrites,
+			Addr:        adminAPIAddr,
+			Log:         ctrl.Log.WithName("admin-api"),
+		}
+		if adminAPIWrites {
+			setupLog.Info("Admin API writes are enabled; the admin API is unauthenticated")
 		}
 		if err := mgr.Add(adminServer); err != nil {
 			setupLog.Error(err, "Failed to register admin API server")

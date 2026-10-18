@@ -289,6 +289,35 @@ func ParseLog(log, nonce string) (corev1alpha1.FlareStep, *Result, error) {
 	return step, &result, nil
 }
 
+// StripMarkers removes the protocol lines (step markers and result chunks)
+// from a runner log, whatever their nonce, so a person reading the log sees
+// only the tool output. The result block is base64 of the run result, which
+// is noise to a reader and is already copied into the Flare status.
+func StripMarkers(log string) string {
+	lines := strings.SplitAfter(log, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if isMarkerLine(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "")
+}
+
+// isMarkerLine reports whether a log line is a step marker or a result chunk.
+func isMarkerLine(line string) bool {
+	_, after, ok := strings.Cut(line, marker)
+	if !ok {
+		return false
+	}
+	_, body, ok := strings.Cut(after, "::")
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(body, "step::") || strings.HasPrefix(body, "result::")
+}
+
 func parsePosition(position string) (int, int, bool) {
 	left, right, ok := strings.Cut(position, "/")
 	if !ok {

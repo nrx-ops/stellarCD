@@ -95,8 +95,9 @@ func event(namespace, name, reason string, at time.Time) *corev1.Event {
 // them natively.
 func newServer(t *testing.T, objs ...client.Object) *Server {
 	t.Helper()
+	scheme := testScheme(t)
 	c := fake.NewClientBuilder().
-		WithScheme(testScheme(t)).
+		WithScheme(scheme).
 		WithObjects(objs...).
 		WithIndex(&corev1.Event{}, "involvedObject.kind", func(o client.Object) []string {
 			return []string{o.(*corev1.Event).InvolvedObject.Kind}
@@ -105,7 +106,7 @@ func newServer(t *testing.T, objs ...client.Object) *Server {
 			return []string{o.(*corev1.Event).InvolvedObject.Name}
 		}).
 		Build()
-	return &Server{Reader: c, Addr: ":0", Log: logr.Discard()}
+	return &Server{Reader: c, Client: c, Scheme: scheme, Addr: ":0", Log: logr.Discard()}
 }
 
 // do performs a request against the server's route table.

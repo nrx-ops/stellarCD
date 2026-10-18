@@ -18,6 +18,11 @@ controller:
   leaderElection:
     enabled: false
 
+  # Local cluster: let the dashboard edit Astrals and drive Flares. Do not
+  # carry this setting into a shared cluster: the admin API is unauthenticated.
+  adminApi:
+    writes: true
+
   # Plain HTTP metrics so `kubectl port-forward` + curl works without a token.
   # Do not carry this setting into a shared cluster.
   metrics:

@@ -6,8 +6,8 @@
 Istio route to the dashboard, the mesh-native alternative to ui-ingress.yaml
 and ui-httproute.yaml.
 
-As with those two: the admin API behind this dashboard is unauthenticated and
-read-only. Bind an Istio AuthorizationPolicy or a RequestAuthentication to the
+As with those two: the admin API behind this dashboard is unauthenticated,
+and writable when controller.adminApi.writes is true. Bind an Istio AuthorizationPolicy or a RequestAuthentication to the
 workload before routing to it from outside the mesh -- a VirtualService routes
 traffic, it does not authenticate it.
 */}}

@@ -79,8 +79,9 @@ kubectl delete pvc -n stellarcd-system -l app.kubernetes.io/instance=stellarcd
 | `controller.image.tag` | `""` | Image tag; falls back to `.Chart.AppVersion`. |
 | `controller.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `controller.leaderElection.enabled` | `true` | Guards against two managers reconciling one Terraform state. Required when `replicaCount > 1`. |
-| `controller.adminApi.enabled` | `true` | Serve the read-only API the dashboard reads through. |
+| `controller.adminApi.enabled` | `true` | Serve the API the dashboard reads through. |
 | `controller.adminApi.port` | `8080` | Admin API container port. |
+| `controller.adminApi.writes` | `false` | Let the dashboard edit Astrals and start, approve, confirm or cancel Flares (`--admin-api-writes`). The API is unauthenticated: enable only behind an authenticating proxy. `true` in `values-minikube.yaml`. |
 | `controller.adminApi.service.type` | `ClusterIP` | Admin API Service type. Keep internal: it is unauthenticated. |
 | `controller.health.port` | `8081` | Port serving `/healthz` and `/readyz`. |
 | `controller.metrics.enabled` | `true` | Serve Prometheus metrics. |

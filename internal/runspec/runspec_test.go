@@ -139,3 +139,23 @@ func TestRequestRoundTrip(t *testing.T) {
 		t.Fatal("a unit-scoped Flare must not run the whole stack")
 	}
 }
+
+func TestStripMarkers(t *testing.T) {
+	result, err := ResultLines("n0nce", sampleResult(0))
+	if err != nil {
+		t.Fatalf("ResultLines: %v", err)
+	}
+	log := "Initializing...\n" +
+		StepLine("n0nce", corev1alpha1.FlareStepPlan) + "\n" +
+		"Plan: 1 to add\n" +
+		StepLine("other", corev1alpha1.FlareStepApply) + "\n" +
+		strings.Join(result, "\n") + "\n" +
+		"echo ::stellarcd:: is just text\n" +
+		"done"
+
+	got := StripMarkers(log)
+	want := "Initializing...\nPlan: 1 to add\necho ::stellarcd:: is just text\ndone"
+	if got != want {
+		t.Errorf("StripMarkers() = %q, want %q", got, want)
+	}
+}
